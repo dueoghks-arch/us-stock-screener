@@ -93,7 +93,7 @@ def screen_stocks():
     if results:
         final_df = pd.DataFrame(results).sort_values(by='Market Cap', ascending=False)
         final_df['Market Cap($B)'] = (final_df['Market Cap'] / 1e9).round(2)
-        output_text = final_df[['Ticker', 'Name', 'Market Cap($B)', 'Forward PE', 'Price', 'Issue']].to_string(index=False)
+        output_text = final_df[['Ticker', 'Name']].to_string(index=False)
         print(output_text)
         send_email(output_text)
     else:
