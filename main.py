@@ -22,15 +22,14 @@ def get_sp500_tickers():
 def send_email(content, is_html=False):
     sender_email = os.environ.get('EMAIL_USER')
     sender_password = os.environ.get('EMAIL_PASS')
-    
     if not sender_email or not sender_password:
-        print("환경변수(EMAIL_USER, EMAIL_PASS)가 설정되지 않아 메일을 보내지 않습니다.")
+        print("환경변수 설정이 되어있지 않습니다.")
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"🚀 미국 주식 스캔 결과 ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"📊 미주 스캔: 신고가 눌림목 및 30주선 돌파 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
-    msg['To'] = sender_email # 본인 수신
+    msg['To'] = sender_email
 
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
@@ -46,101 +45,55 @@ def screen_stocks():
     if not tickers: return
 
     results = []
-    
-    # 30주선 및 52주 신고가 계산을 위해 2년치 주봉 데이터 다운로드
-    print(f"S&P 500 데이터 분석 시작... (종목 수: {len(tickers)})")
+    print(f"데이터 분석 시작... (종목 수: {len(tickers)})")
+    # 52주 및 30주 지표 계산을 위해 2년치 주봉 데이터 사용
     all_data = yf.download(tickers, period="2y", interval="1wk", group_by='ticker', threads=True)
 
     one_month_ago = datetime.now() - timedelta(days=30)
 
     for ticker in tickers:
         try:
-            # 개별 종목 데이터 추출 및 전처리
             df = all_data[ticker].dropna()
             if len(df) < 52: continue
 
             # 지표 계산
-            df['MA5'] = df['Close'].rolling(window=5).mean()
-            df['MA20'] = df['Close'].rolling(window=20).mean()
             df['MA30'] = df['Close'].rolling(window=30).mean()
-            # 52주 신고가 (이번 주를 제외한 지난 52주간의 최고가)
+            # 52주 신고가 (과거 52주 최고점)
             df['High52'] = df['High'].rolling(window=52).max().shift(1)
 
-            curr = df.iloc[-1]   # 이번 주
-            prev1 = df.iloc[-2]  # 지난 주
+            curr_price = df['Close'].iloc[-1]
             
-            # 최근 10주 내 52주 신고가 돌파 이력이 있는지 확인
-            def hit_52wk_high_within(n):
-                recent = df.iloc[-n:]
-                return any(recent['High'] >= recent['High52'])
-
+            # 최근 5주간의 데이터 추출
+            recent_5w = df.iloc[-5:]
+            
             is_target = False
             strategy_name = ""
 
-            # --- 핵심 전략 로직 ---
-            # 공통: 30주 이평선 위에 종가가 위치할 것
-            if curr['Close'] > curr['MA30']:
-                
-                # 전략 1: 이번 주 52주 신고가 돌파
-                if curr['Close'] > curr['High52']:
+            # --- 로직 1: 5주 내 52주 신고가 달성 후 조정 (신고가의 80%~100% 사이) ---
+            recent_52wk_high = recent_5w['High'].max()
+            past_52wk_high = df['High52'].iloc[-5:].max()
+            
+            if recent_52wk_high >= past_52wk_high: # 최근 5주 내 신고가 경신 이력 존재
+                if recent_52wk_high * 0.8 <= curr_price < recent_52wk_high:
                     is_target = True
-                    strategy_name = "1.신고가 돌파"
+                    strategy_name = "1.신고가 눌림목(80%이상)"
 
-                # 전략 2: 돌파 후 강세 유지 (10주 내 돌파 + MA5 위 + 지난주 종가 이상)
-                elif hit_52wk_high_within(10) and curr['Close'] > curr['MA5'] and curr['Close'] >= prev1['Close']:
+            # --- 로직 2: 최근 5주 이내 30주봉 돌파 ---
+            # (저번주 종가는 MA30 아래였으나, 이번주 종가가 MA30 위로 돌파 혹은 5주 내 돌파 발생)
+            if not is_target:
+                was_below = any(df['Close'].iloc[-10:-5] < df['MA30'].iloc[-10:-5]) # 과거에 아래에 있었음
+                now_above = any(df['Close'].iloc[-5:] > df['MA30'].iloc[-5:])     # 최근 5주 내 위로 올라옴
+                if was_below and now_above:
                     is_target = True
-                    strategy_name = "2.돌파 후 강세유지"
+                    strategy_name = "2.최근 5주내 30주선 돌파"
 
-                # 전략 3: 돌파 후 눌림목 (10주 내 돌파 + MA5 아래 MA20 위)
-                elif hit_52wk_high_within(10) and curr['MA20'] < curr['Close'] < curr['MA5']:
+            # --- 로직 3: 5주 내 30주선 돌파 후, 현재 30주선 대비 10% 이상 위 ---
+            if not is_target or strategy_name == "2.최근 5주내 30주선 돌파":
+                # 5주 내 돌파 이력이 있고 + 현재가가 MA30보다 10% 이상 높은 경우
+                if any(df['Close'].iloc[-5:] > df['MA30'].iloc[-5:]) and curr_price >= (df['MA30'].iloc[-1] * 1.1):
                     is_target = True
-                    strategy_name = "3.돌파 후 눌림목"
+                    strategy_name = "3.30주선 돌파 후 가속(10%+)"
 
-            # 필터링 통과 시 상세 데이터 확인
             if is_target:
                 stock = yf.Ticker(ticker)
-                info = stock.info
-                
-                # 기본적 분석: PER 30 이하
-                fwd_pe = info.get('forwardPE', 999)
-                if fwd_pe > 30: continue
-
-                # 뉴스 키워드 체크
-                has_shortage = False
-                for news in stock.news:
-                    pub_time = datetime.fromtimestamp(news.get('providerPublishTime', 0))
-                    if pub_time >= one_month_ago:
-                        news_text = (news.get('title', '') + news.get('summary', '')).lower()
-                        if any(k in news_text for k in ['shortage', 'supply chain', 'lack of']):
-                            has_shortage = True
-                            break
-
-                results.append({
-                    'Ticker': ticker,
-                    'Strategy': strategy_name,
-                    'Price': round(curr['Close'], 2),
-                    'Forward PE': round(fwd_pe, 2),
-                    'Market Cap($B)': round(info.get('marketCap', 0) / 1e9, 2),
-                    'Issue': "🌟 SHORTAGE" if has_shortage else "",
-                    'Name': info.get('shortName', 'N/A')
-                })
-                print(f"✅ 발견: {ticker} ({strategy_name})")
-
-        except:
-            continue
-
-    # 결과 리포트 생성 및 전송
-    if results:
-        final_df = pd.DataFrame(results).sort_values(by=['Strategy', 'Market Cap($B)'], ascending=[True, False])
-        html_content = f"""
-        <h3>🚀 미국 주식 스캔 결과 ({datetime.now().strftime('%Y-%m-%d')})</h3>
-        <p>전략 1: 신고가 돌파 / 전략 2: 강세 유지 / 전략 3: 눌림목 구간</p>
-        {final_df.to_html(index=False, border=1, justify='center')}
-        """
-        send_email(html_content, is_html=True)
-    else:
-        send_email("금일 조건에 부합하는 종목이 없습니다.")
-        print("조건 만족 종목 없음.")
-
-if __name__ == "__main__":
-    screen_stocks()
+                info =
