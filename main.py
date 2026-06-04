@@ -25,7 +25,7 @@ def send_email(content, is_html=False):
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"🎯 주도주 전략 스캔 보고서: {datetime.now().strftime('%Y-%m-%d')}"
+    msg['Subject'] = f"🚀 [박스권 돌파] 핵심 주도주 스캔 보고서 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
     msg['To'] = sender_email
 
@@ -42,9 +42,9 @@ def screen_stocks():
     if not tickers: return
 
     results = []
-    print(f"데이터 분석 시작... ({len(tickers)} 종목)")
+    print(f"박스권 돌파 모멘텀 분석 시작... ({len(tickers)} 종목)")
     
-    # 데이터 확보 (안전하게 2년치)
+    # 52주 고가 및 박스권 계산을 위해 2년치 데이터 다운로드
     try:
         all_data = yf.download(tickers, period="2y", interval="1wk", group_by='ticker', threads=True)
     except Exception as e:
@@ -52,68 +52,53 @@ def screen_stocks():
         return
 
     ten_weeks_ago = datetime.now() - timedelta(days=70)
+    # 공급 부족 및 실적 가이던스 관련 핵심 호재 키워드
     keywords = ['shortage', 'supply chain', 'guidance raise', 'beat', 'exceed', 'above expectations', 'eps', 'expansion']
 
     for ticker in tickers:
         try:
-            # 1. 데이터 검증
+            # 데이터 기본 검증
             if ticker not in all_data or all_data[ticker].empty:
                 continue
             
             df = all_data[ticker].dropna()
-            if len(df) < 52: continue
+            if len(df) < 55: continue
 
-            # 2. 지표 계산
-            df['MA30'] = df['Close'].rolling(window=30).mean()
+            # 52주 신고가 라인 계산 (이번 주 제외 과거 52주 고가의 최댓값 = 박스권 상단)
             df['High52'] = df['High'].rolling(window=52).max().shift(1)
             box_top = df['High52'].iloc[-1]
 
             curr_price = df['Close'].iloc[-1]
-            recent_2w = df.iloc[-2:]
             recent_4w = df.iloc[-4:]
-            recent_10w = df.iloc[-10:]
 
             is_target = False
-            strategy_name = ""
 
-            # 3. Ticker 정보 로드 (에러 방지용)
-            stock = yf.Ticker(ticker)
-            fwd_pe = 999
-            try:
-                info = stock.info
-                fwd_pe = info.get('forwardPE', 999)
-                mkt_cap = info.get('marketCap', 0)
-                short_name = info.get('shortName', 'N/A')
-            except:
+            # --- [단일 전략] 52주 박스권을 최근 4주 내 돌파 후 가속 (+20% ~ +50%) ---
+            # 최근 4주 동안의 주봉 고가 중 한 번이라도 이전 52주 박스권 상단을 뚫었는지 확인
+            box_break_recent = any(recent_4w['High'] >= recent_4w['High52'])
+            
+            if box_break_recent:
+                # 현재 가격이 돌파 기준선(box_top)보다 +20% 위, +50% 아래에 위치하는지 검증
+                if (box_top * 1.20) <= curr_price <= (box_top * 1.50):
+                    is_target = True
+
+            # 조건 만족 시에만 무거운 뉴스 및 기업 정보 가져오기
+            if is_target:
+                stock = yf.Ticker(ticker)
+                
+                # 기본 정보 안전하게 추출
                 fwd_pe = 999
                 mkt_cap = 0
                 short_name = 'N/A'
+                try:
+                    info = stock.info
+                    fwd_pe = info.get('forwardPE', 999)
+                    mkt_cap = info.get('marketCap', 0)
+                    short_name = info.get('shortName', 'N/A')
+                except:
+                    pass
 
-            # --- [전략 1] 30주선 돌파 + 신고가 안착 (PER 30) ---
-            if fwd_pe <= 30:
-                break_ma30 = any(recent_10w['Close'] > recent_10w['MA30'])
-                break_high52 = any(recent_10w['High'] >= recent_10w['High52'])
-                if break_ma30 and break_high52:
-                    if (box_top * 0.8) <= curr_price <= (box_top * 1.2):
-                        is_target = True
-                        strategy_name = "1.30주선+신고가 안착"
-
-            # --- [전략 2] 최근 2주 신고가 (PER 40) ---
-            if not is_target and fwd_pe <= 40:
-                if any(recent_2w['High'] >= recent_2w['High52']):
-                    is_target = True
-                    strategy_name = "2.최근 2주 신고가"
-
-            # --- [전략 3] 박스권 돌파 후 가속 (최근 4주) ---
-            if not is_target:
-                box_break_recent = any(recent_4w['High'] >= recent_4w['High52'])
-                if box_break_recent:
-                    if (box_top * 1.2) <= curr_price <= (box_top * 1.5):
-                        is_target = True
-                        strategy_name = "3.박스권 돌파 가속"
-
-            # 4. 타겟 종목 분석
-            if is_target:
+                # 최근 10주 내 호재 뉴스 스캔 (⭐ 별표 로직)
                 has_star = False
                 try:
                     news_list = stock.news
@@ -123,35 +108,41 @@ def screen_stocks():
                             if pub_time >= ten_weeks_ago:
                                 content = (news.get('title', '') + news.get('summary', '')).lower()
                                 if any(k in content for k in keywords):
-                                    has_star = True; break
-                except: pass
+                                    has_star = True
+                                    break
+                except: 
+                    pass
 
                 display_ticker = f"⭐ {ticker}" if has_star else ticker
+
                 results.append({
                     'Ticker': display_ticker,
-                    'Strategy': strategy_name,
                     'Price': round(curr_price, 2),
-                    'Forward PE': round(fwd_pe, 2),
+                    'Box Top': round(box_top, 2),
+                    'Gain from Box': f"+{round(((curr_price/box_top)-1)*100, 1)}%",
+                    'Forward PE': round(fwd_pe, 2) if fwd_pe != 999 else 'N/A',
                     'Market Cap($B)': round(mkt_cap / 1e9, 2),
                     'Name': short_name
                 })
                 print(f"✅ 발견: {ticker}")
 
         except Exception as e:
-            print(f"오류 ({ticker}): {e}")
+            # 특정 종목 오류 시 멈추지 않고 패스
             continue
 
-    # 5. 결과 보고 및 전송
+    # 결과 리포트 빌드 및 전송
     if results:
-        final_df = pd.DataFrame(results).sort_values(by=['Strategy', 'Market Cap($B)'], ascending=[True, False])
+        final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
         html_content = f"""
-        <h3 style="color: #1a237e;">🔥 미국 주식 전략 통합 스캔 ({datetime.now().strftime('%Y-%m-%d')})</h3>
-        <p>⭐ 표시: 공급부족, 실적 호재 등 뉴스 발견(최근 10주)</p>
+        <h3 style="color: #0d47a1;">🔥 미주 52주 박스권 돌파 후 가속주 리포트 ({datetime.now().strftime('%Y-%m-%d')})</h3>
+        <p><b>필터 조건:</b> 최근 4주 내 52주 박스권 상단을 돌파하고, 현재 주가가 돌파선 대비 <b>+20% ~ +50%</b> 구간에 위치한 강세 종목</p>
+        <p><b>⭐ 표시:</b> 최근 10주 내 공급 부족(Shortage), EPS/가이던스 상회 등 확실한 업황/실적 호재가 포착된 기업</p>
+        <br>
         {final_df.to_html(index=False, border=1, justify='center').replace('⭐', '<span style="color:blue; font-weight:bold;">⭐</span>')}
         """
         send_email(html_content, is_html=True)
     else:
-        send_email("부합하는 종목이 없습니다.")
+        send_email("현재 박스권을 돌파하여 가속 구간(+20%~+50%)에 진입한 종목이 없습니다.")
 
 if __name__ == "__main__":
     screen_stocks()
