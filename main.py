@@ -12,7 +12,6 @@ def get_sp500_tickers():
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         response = requests.get(url, headers=headers)
-        # lxml 라이브러리가 설치되어 있어야 합니다.
         sp500 = pd.read_html(response.text)[0]
         return [t.replace('.', '-') for t in sp500['Symbol'].tolist()]
     except Exception as e:
@@ -28,7 +27,7 @@ def send_email(content, is_html=False):
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"📊 미주 핵심 기업 스캔 ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"🚀 [미주 스캔] 52주 신고가 추세 유지주 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
     msg['To'] = sender_email
 
@@ -48,12 +47,13 @@ def screen_stocks():
     results = []
     print(f"데이터 분석 및 뉴스 스캐닝 시작... (종목 수: {len(tickers)})")
     
-    # 데이터 다운로드 (속도 향상을 위해 threads=True)
+    # 52주 지표 계산을 위해 안전하게 2년치(2y) 데이터 다운로드
     all_data = yf.download(tickers, period="2y", interval="1wk", group_by='ticker', threads=True)
 
+    # 최근 10주간의 뉴스를 분석하기 위한 기준일
     ten_weeks_ago = datetime.now() - timedelta(days=70)
 
-    # 키워드 그룹 정의
+    # 뉴스 키워드 그룹 정의
     keywords = {
         'SHORTAGE': ['shortage', 'lack of', 'supply chain', 'tight supply', 'backlog'],
         'EXPANSION': ['expansion', 'capacity', 'new factory', 'facility', 'ramping up', 'capex'],
@@ -65,38 +65,30 @@ def screen_stocks():
             df = all_data[ticker].dropna()
             if len(df) < 52: continue
 
-            df['MA30'] = df['Close'].rolling(window=30).mean()
+            # 지표 계산: 5주 주봉 이평선 및 과거 52주 신고가(이번 주 제외한 shift(1))
+            df['MA5'] = df['Close'].rolling(window=5).mean()
             df['High52'] = df['High'].rolling(window=52).max().shift(1)
+
             curr_price = df['Close'].iloc[-1]
-            recent_5w = df.iloc[-5:]
+            curr_ma5 = df['MA5'].iloc[-1]
             
-            is_target = False
-            strategy_name = ""
-
-            # --- 기술적 로직 3종 ---
-            recent_52wk_high = recent_5w['High'].max()
-            past_52wk_high = df['High52'].iloc[-5:].max()
+            # 1. 최근 10주간 데이터 추출하여 52주 신고가 달성 이력이 있는지 확인
+            # (최근 10주간의 주봉 High가 당시의 High52를 한 번이라도 터치하거나 넘겼는지 체크)
+            recent_10w = df.iloc[-10:]
+            hit_52wk_recently = any(recent_10w['High'] >= recent_10w['High52'])
             
-            # 1. 5주 내 신고가 경신 후 눌림
-            if recent_52wk_high >= past_52wk_high and (recent_52wk_high * 0.8 <= curr_price < recent_52wk_high):
-                is_target = True
-                strategy_name = "1.신고가 눌림목"
-            # 2. 최근 5주 내 30주선 돌파
-            elif any(df['Close'].iloc[-10:-5] < df['MA30'].iloc[-10:-5]) and any(df['Close'].iloc[-5:] > df['MA30'].iloc[-5:]):
-                is_target = True
-                strategy_name = "2.30주선 돌파"
-            # 3. 30주선 돌파 후 10% 이상 가속
-            elif any(df['Close'].iloc[-5:] > df['MA30'].iloc[-5:]) and curr_price >= (df['MA30'].iloc[-1] * 1.1):
-                is_target = True
-                strategy_name = "3.30주선 돌파 가속"
+            # 2. 현재 가격이 5주봉 이평선보다 위에 있는지 확인
+            above_ma5 = curr_price > curr_ma5
 
-            if is_target:
+            # 단일 조건 판별
+            if hit_52wk_recently and above_ma5:
                 stock = yf.Ticker(ticker)
-                # PER 필터
+                
+                # 기본 필터: PER 30 이하
                 fwd_pe = stock.info.get('forwardPE', 999)
                 if fwd_pe > 30: continue
 
-                # 뉴스 스캔
+                # 뉴스 스캔 (최근 10주)
                 found_issues = []
                 try:
                     for news in stock.news:
@@ -114,28 +106,30 @@ def screen_stocks():
 
                 results.append({
                     'Ticker': display_ticker,
-                    'Strategy': strategy_name,
                     'Price': round(curr_price, 2),
+                    '5주선(MA5)': round(curr_ma5, 2),
                     'Forward PE': round(fwd_pe, 2),
                     'Market Cap($B)': round(stock.info.get('marketCap', 0) / 1e9, 2),
                     'Hot Issue': issue_tag,
                     'Name': stock.info.get('shortName', 'N/A')
                 })
-                print(f"✅ 발견: {ticker}")
+                print(f"✅ 발견: {ticker} (이슈: {issue_tag if issue_tag else '없음'})")
 
         except:
             continue
 
     if results:
+        # 핫 이슈(호재 기사)가 있는 종목이 리스트 상단에 오도록 정렬
         final_df = pd.DataFrame(results).sort_values(by=['Hot Issue', 'Market Cap($B)'], ascending=[False, False])
         html_content = f"""
-        <h3 style="color: #2e7d32;">🚀 미국 주식 전략 스캔 ({datetime.now().strftime('%Y-%m-%d')})</h3>
-        <p><b>🔥 표시:</b> 10주 내 공급부족, 설비확장, 성장 뉴스 존재</p>
+        <h3 style="color: #1565c0;">🚀 미국 주식 단일 전략 스캔 결과 ({datetime.now().strftime('%Y-%m-%d')})</h3>
+        <p><b>필터 조건:</b> 최근 10주 내 52주 신고가 달성 후 현재 가격이 5주봉 이평선(MA5) 위에 안착한 기업 (PER 30 이하)</p>
+        <p><b>🔥 표시:</b> 최근 10주 내 공급부족(Shortage), 설비확장(Expansion), 강한성장(Growth) 관련 뉴스 발견</p>
         {final_df.to_html(index=False, border=1, justify='center').replace('🔥', '<span style="color:red;">🔥</span>')}
         """
         send_email(html_content, is_html=True)
     else:
-        send_email("조건 만족 종목 없음")
+        send_email("조건에 부합하는 주도주가 오늘 장에는 없습니다.")
 
 if __name__ == "__main__":
     screen_stocks()
