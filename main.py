@@ -39,11 +39,6 @@ def send_email(content, is_html=False):
         print(f"메일 발송 실패: {e}")
 
 def screen_stocks(min_gain=0.05, max_gain=0.30):
-    """
-    min_gain & max_gain: 박스권 상단 돌파 후 현재 주가의 허용 상승률 구간
-    - 기본값 (0.05 ~ 0.30): 돌파 초입 및 안정적 추세 가속 구간 (+5% ~ +30%)
-    - 기존값 (0.20 ~ 0.50): 초강세 모멘텀 가속 구간 (+20% ~ +50%)
-    """
     tickers = get_sp500_tickers()
     if not tickers: return
 
@@ -69,7 +64,7 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
             if len(df) < 55: 
                 continue
 
-            # 52주 신고가 라인 계산 (이번 주 제외 과거 52주 고가의 최댓값)
+            # 52주 신고가 라인 계산
             df['High52'] = df['High'].rolling(window=52).max().shift(1)
             
             box_top = df['High52'].iloc[-1]
@@ -85,19 +80,22 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
             box_break_recent = any(recent_4w['High'] >= recent_4w['High52'])
             
             if box_break_recent:
-                # 💡 팁 적용: 파라미터 기반 유연한 구간 검증
                 if (box_top * (1 + min_gain)) <= curr_price <= (box_top * (1 + max_gain)):
                     is_target = True
 
             if is_target:
                 stock = yf.Ticker(ticker)
                 
+                # 변수 기본값 설정
+                trail_pe = 999
                 fwd_pe = 999
                 mkt_cap = 0
                 short_name = 'N/A'
+                
                 try:
                     info = stock.info
-                    fwd_pe = info.get('forwardPE', 999)
+                    trail_pe = info.get('trailingPE', 999)  # 💡 현재 PER 추출
+                    fwd_pe = info.get('forwardPE', 999)     # 💡 12M 선행 PER 추출
                     mkt_cap = info.get('marketCap', 0)
                     short_name = info.get('shortName', 'N/A')
                 except:
@@ -125,32 +123,9 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
                     'Price': round(curr_price, 2),
                     'Box Top': round(box_top, 2),
                     'Gain from Box': f"+{round(((curr_price/box_top)-1)*100, 1)}%",
-                    'Forward PE': round(fwd_pe, 2) if fwd_pe != 999 else 'N/A',
+                    'Current PE': round(trail_pe, 2) if trail_pe != 999 else 'N/A',     # 💡 표에 추가
+                    'Forward PE': round(fwd_pe, 2) if fwd_pe != 999 else 'N/A',         # 💡 표에 추가
                     'Market Cap($B)': round(mkt_cap / 1e9, 2),
                     'Name': short_name
                 })
-                print(f"✅ 발견: {ticker} (박스권 대비 {round(((curr_price/box_top)-1)*100, 1)}% 상승)")
-
-        except Exception as e:
-            continue
-
-    # 결과 리포트 빌드 및 전송
-    if results:
-        final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
-        html_content = f"""
-        <h3 style="color: #0d47a1;">🔥 미주 52주 박스권 돌파 주도주 리포트 ({datetime.now().strftime('%Y-%m-%d')})</h3>
-        <p><b>필터 조건:</b> 최근 4주 내 52주 박스권 상단을 돌파하고, 현재 주가가 돌파선 대비 <b>+{int(min_gain*100)}% ~ +{int(max_gain*100)}%</b> 구간에 위치한 강세 종목</p>
-        <p><b>⭐ 표시:</b> 최근 10주 내 공급 부족(Shortage), EPS/가이던스 상회 등 확실한 업황/실적 호재가 포착된 기업</p>
-        <br>
-        {final_df.to_html(index=False, border=1, justify='center').replace('⭐', '<span style="color:blue; font-weight:bold;">⭐</span>')}
-        """
-        send_email(html_content, is_html=True)
-    else:
-        send_email(f"현재 박스권을 돌파하여 설정 구간(+{int(min_gain*100)}%~+{int(max_gain*100)}%)에 진입한 종목이 없습니다.")
-
-if __name__ == "__main__":
-    # 💡 팁대로 돌파 초입~안정적 가속 구간을 잡고 싶다면 기본값 그대로 실행 (+5% ~ +30%)
-    screen_stocks(min_gain=0.05, max_gain=0.30)
-    
-    # 만약 예전처럼 완전히 날아가는 초강세 모멘텀 종목만 골라내고 싶다면 아래처럼 변경 가능
-    # screen_stocks(min_gain=0.20, max_gain=0.50)
+                print(f"✅ 발견: {ticker} (박스권 대비 {round(((curr_price/box_top)-1
