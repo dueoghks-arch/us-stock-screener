@@ -86,14 +86,67 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
 
             if is_target:
                 stock = yf.Ticker(ticker)
-                trail_pe = 999
-                fwd_pe = 999
-                mkt_cap = 0
-                short_name = 'N/A'
+                trail_pe, fwd_pe, mkt_cap, short_name = 999, 999, 0, 'N/A'
                 
+                # 💡 오타 및 잘림 현상을 원천 차단하기 위해 딕셔너리 추출을 직관적인 1줄 코드로 튜닝
                 try:
                     info = stock.info
                     trail_pe = info.get('trailingPE', 999)
                     fwd_pe = info.get('forwardPE', 999)
                     mkt_cap = info.get('marketCap', 0)
-                    short_name = info.get('shortName',
+                    short_name = info.get('shortName', 'N/A')
+                except:
+                    pass
+
+                # 뉴스 스캔
+                has_star = False
+                try:
+                    news_list = stock.news
+                    if news_list:
+                        for news in news_list:
+                            pub_time = datetime.fromtimestamp(news.get('providerPublishTime', 0))
+                            if pub_time >= ten_weeks_ago:
+                                content = (news.get('title', '') + news.get('summary', '')).lower()
+                                if any(k in content for k in keywords):
+                                    has_star = True
+                                    break
+                except: 
+                    pass
+
+                display_ticker = f"⭐ {ticker}" if has_star else ticker
+
+                results.append({
+                    'Ticker': display_ticker,
+                    'Price': round(curr_price, 2),
+                    'Box Top': round(box_top, 2),
+                    'Gain from Box': f"+{round(((curr_price/box_top)-1)*100, 1)}%",
+                    'Current PE': round(trail_pe, 2) if trail_pe != 999 else 'N/A',
+                    'Forward PE': round(fwd_pe, 2) if fwd_pe != 999 else 'N/A',
+                    'Market Cap($B)': round(mkt_cap / 1e9, 2),
+                    'Name': short_name
+                })
+                print(f"✅ 발견: {ticker} (박스권 대비 {round(((curr_price/box_top)-1)*100, 1)}% 상승)")
+
+        except Exception as e:
+            print(f"⚠️ {ticker} 연산 건너뜀 (사유: {e})")
+            continue
+
+    # HTML 템플릿 결합 안전 구조
+    if results:
+        final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
+        table_html = final_df.to_html(index=False, border=1, justify='center')
+        table_html = table_html.replace('⭐', '<span style="color:blue; font-weight:bold;">⭐</span>')
+        
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        
+        html_content = '<h3 style="color: #0d47a1;">🔥 미주 52주 박스권 돌파 주도주 리포트 (' + today_str + ')</h3>'
+        html_content += '<p><b>필터 조건:</b> 최근 4주 내 52주 박스권 상단을 돌파하고, 현재 주가가 돌파선 대비 <b>+' + str(int(min_gain*100)) + '% ~ +' + str(int(max_gain*100)) + '%</b> 구간에 위치한 강세 종목</p>'
+        html_content += '<p><b>⭐ 표시:</b> 최근 10주 내 공급 부족(Shortage), EPS/가이던스 상회 등 확실한 업황/실적 호재가 포착된 기업</p><br>'
+        html_content += table_html
+        
+        send_email(html_content, is_html=True)
+    else:
+        send_email("현재 박스권을 돌파하여 설정 구간에 진입한 종목이 없습니다.")
+
+if __name__ == "__main__":
+    screen_stocks(min_gain=0.05, max_gain=0.30)
