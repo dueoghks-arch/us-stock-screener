@@ -11,12 +11,10 @@ def get_sp500_tickers():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        # 💡 파서 형식을 'lxml'로 명시하여 html 파싱 에러 방지
         sp500 = pd.read_html(response.text, flavor='lxml')[0]
         return [t.replace('.', '-') for t in sp500['Symbol'].tolist()]
     except Exception as e:
         print(f"❌ 티커 목록 가져오기 실패: {e}")
-        # 실패 시 시스템이 완전히 뻗지 않도록 주요 탑티어 종목으로 방어 유도
         return ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'BRK-B', 'LLY', 'AVGO', 'TSLA']
 
 def send_email(content, is_html=False):
@@ -51,7 +49,6 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
     print(f"🔍 설정된 필터 구간: 박스권 상단 대비 +{int(min_gain*100)}% ~ +{int(max_gain*100)}%")
     
     try:
-        # 💡 대량 다운로드 안정성을 위해 다운로드 옵션 튜닝
         all_data = yf.download(tickers, period="2y", interval="1wk", group_by='ticker', threads=True, timeout=30)
     except Exception as e:
         print(f"❌ 데이터 다운로드 중 치명적 오류: {e}")
@@ -60,7 +57,6 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
     ten_weeks_ago = datetime.now() - timedelta(days=70)
     keywords = ['shortage', 'supply chain', 'guidance raise', 'beat', 'exceed', 'above expectations', 'eps', 'expansion']
 
-    # 💡 멀티인덱스 컬럼 구조 안전하게 체크
     has_levels = hasattr(all_data.columns, 'levels') and len(all_data.columns.levels) > 0
 
     for ticker in tickers:
@@ -121,6 +117,7 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
 
                 display_ticker = f"⭐ {ticker}" if has_star else ticker
 
+                # 💡 괄호 오타 수정 완료 부분
                 results.append({
                     'Ticker': display_ticker,
                     'Price': round(curr_price, 2),
@@ -128,4 +125,20 @@ def screen_stocks(min_gain=0.05, max_gain=0.30):
                     'Gain from Box': f"+{round(((curr_price/box_top)-1)*100, 1)}%",
                     'Current PE': round(trail_pe, 2) if trail_pe != 999 else 'N/A',
                     'Forward PE': round(fwd_pe, 2) if fwd_pe != 999 else 'N/A',
-                    'Market Cap($B)': round(mkt_cap / 1e9,
+                    'Market Cap($B)': round(mkt_cap / 1e9, 2),
+                    'Name': short_name
+                })
+                print(f"✅ 발견: {ticker} (박스권 대비 {round(((curr_price/box_top)-1)*100, 1)}% 상승)")
+
+        except Exception as e:
+            print(f"⚠️ {ticker} 연산 건너뜀 (사유: {e})")
+            continue
+
+    # 결과 리포트 빌드 및 전송
+    if results:
+        final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
+        html_content = f"""
+        <h3 style="color: #0d47a1;">🔥 미주 52주 박스권 돌파 주도주 리포트 ({datetime.now().strftime('%Y-%m-%d')})</h3>
+        <p><b>필터 조건:</b> 최근 4주 내 52주 박스권 상단을 돌파하고, 현재 주가가 돌파선 대비 <b>+{int(min_gain*100)}% ~ +{int(max_gain*100)}%</b> 구간에 위치한 강세 종목</p>
+        <p><b>⭐ 표시:</b> 최근 10주 내 공급 부족(Shortage), EPS/가이던스 상회 등 확실한 업황/실적 호재가 포착된 기업</p>
+        <br
