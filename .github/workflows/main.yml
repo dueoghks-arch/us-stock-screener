@@ -2,7 +2,7 @@ name: US Stock Screener
 
 on:
   schedule:
-    - cron: '30 21 * * 1-5' # 미주 장마감 후 자동 실행 (UTC 21:30 = 한국 시간 새벽 6시 30분)
+    - cron: '00 09 * * 1-5' # 미주 장마감 후 자동 실행 (UTC 21:30 = 한국 시간 새벽 6시 30분)
   workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
