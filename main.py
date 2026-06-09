@@ -26,7 +26,7 @@ def send_email(content, is_html=False):
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"🚀 [박스권 돌파] S&P500 핵심 주도주 스캔 보고서 ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"🚀 [미국주식 박스권 돌파] S&P500 핵심 주도주 스캔 보고서 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
     msg['To'] = sender_email
 
