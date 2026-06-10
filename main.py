@@ -146,7 +146,7 @@ def screen_stocks(min_gain=0.10, max_gain=1.50):
         
         send_email(html_content, is_html=True)
     else:
-        send_email("현재 박스권을 돌파하여 설정 구간(+{int(min_gain*100)}%~+{int(max_gain*100)}%)에 진입한 국내 종목이 없습니다.")
+        send_email(f"현재 박스권을 돌파하여 설정 구간(+{int(min_gain*100)}%~+{int(max_gain*100)}%)에 진입한 미국 주식 종목이 없습니다.")
 
 if __name__ == "__main__":
     screen_stocks(min_gain=0.10, max_gain=1.50)
