@@ -9,8 +9,8 @@ import requests
 import time
 
 def get_all_tickers():
-    """안정적인 외부 오픈소스를 통해 S&P500, 나스닥, 러셀2000을 포함한 미국 주요 상장사 전체(2,500+)를 수집합니다."""
-    print("⏳ [US] Fetching all US stock tickers (S&P500, NASDAQ, Russell 2000 전체)...")
+    """안정적인 외부 오픈소스를 통해 미국 주요 상장사 전체 티커 리스트를 확보합니다."""
+    print("⏳ [US] Fetching all US stock tickers (S&P500, NASDAQ, Russell 2000 기본 풀)...")
     tickers = set()
     
     try:
@@ -31,50 +31,36 @@ def get_all_tickers():
         
     return list(tickers)
 
-def filter_tickers_by_market_cap(tickers, percentile=50):
+def filter_tickers_by_market_cap(tickers, min_market_cap_billion=1.5):
     """
-    [신규 추가] 다운로드 전, 러셀2000 수준 이하의 초소형주를 필터링합니다.
-    전체 수집된 종목 중 시가총액 기준 상위 50% 종목만 선별하여 반환합니다.
+    [완벽 최적화] 러셀2000 하위 50% 및 기타 초소형 페니주를 물리적 기준선으로 제거합니다.
+    $1.5B (약 15억 달러, 한화 약 2조 원)는 러셀2000 지수 내 중간값 수준으로, 
+    이 선을 적용하면 S&P500, 나스닥, 러셀2000의 실질적인 중상위권 우량주만 남습니다.
     """
-    print(f"🔍 [필터링] {len(tickers)}개 종목 중 시가총액 상위 {percentile}% 선별 중 (소형주 제거)...")
-    mkt_caps = {}
-    
-    # yf.download를 사용해 현재가와 발행주식수를 한번에 대량으로 가져와 시총을 계산하는 편이 유효하나,
-    # yfinance의 fast_info를 활용해 청크 단위로 빠르게 시가총액만 추출합니다.
+    print(f"🔍 [필터링] {len(tickers)}개 종목 중 시가총액 ${min_market_cap_billion}B 이상 종목 선별 시작...")
+    filtered_tickers = []
     chunk_size = 200
+    
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i+chunk_size]
         try:
-            # 여러 티커를 한 번에 조회하여 info를 가져오는 대안 (속도 최적화)
+            # 여러 티커를 한 번에 객체화하여 fast_info 메모리 접근 속도 극대화
             tickers_obj = yf.Tickers(' '.join(chunk))
             for ticker in chunk:
                 try:
-                    # 각 종목의 fast_info에서 시가총액을 빠르게 가져옵니다 (네트워크 비용 최소화)
-                    mkt_cap = tickers_obj.tickers[ticker].fast_info.market_cap
-                    if mkt_cap and mkt_cap > 0:
-                        mkt_caps[ticker] = mkt_cap
+                    mkt_cap_raw = tickers_obj.tickers[ticker].fast_info.market_cap
+                    if mkt_cap_raw:
+                        mkt_cap_billion = mkt_cap_raw / 1e9
+                        # 설정한 최소 시가총액 조건 충족 시에만 통과
+                        if mkt_cap_billion >= min_market_cap_billion:
+                            filtered_tickers.append(ticker)
                 except:
                     continue
         except Exception as e:
             print(f"⚠️ 시총 필터링 중 청크 오류 발생 (건너뜀): {e}")
-        time.sleep(0.2)
+        time.sleep(0.1)
 
-    if not mkt_caps:
-        print("⚠️ 시가총액 데이터를 가져오지 못했습니다. 필터링 없이 진행합니다.")
-        return tickers
-
-    # 데이터프레임 변환 후 상위 50% 컷오프 계산
-    df_cap = pd.DataFrame(list(mkt_caps.items()), columns=['Ticker', 'MarketCap'])
-    cutoff_value = df_cap['MarketCap'].quantile(1 - (percentile / 100))
-    
-    filtered_df = df_cap[df_cap['MarketCap'] >= cutoff_value]
-    filtered_tickers = filtered_df['Ticker'].tolist()
-    
-    # 정보 제공용 기준 시총 계산 (단위: 억 달러)
-    cutoff_in_billion = round(cutoff_value / 1e9, 2)
-    print(f"✅ 필터링 완료: 기준 시가총액 ${cutoff_in_billion}B 이상 종목 선별 완료.")
-    print(f"📊 대상 종목 축소: {len(tickers)}개 -> {len(filtered_tickers)}개")
-    
+    print(f"📊 대상 종목 축소 완료: {len(tickers)}개 -> {len(filtered_tickers)}개 (소형 잡주 제거 완료)")
     return filtered_tickers
 
 def send_email(content, is_html=False):
@@ -103,8 +89,8 @@ def screen_stocks():
     # 1. 전체 티커 수집
     raw_tickers = get_all_tickers()
     
-    # 2. [수정] 러셀 소형주 유동성 및 노이즈 제거를 위한 시가총액 상위 50% 필터링 실행
-    tickers = filter_tickers_by_market_cap(raw_tickers, percentile=50)
+    # 2. 러셀 소형주 하위 위주 노이즈 제거를 위한 시가총액 최소 허들 ($1.5B) 필터링 실행
+    tickers = filter_tickers_by_market_cap(raw_tickers, min_market_cap_billion=1.5)
     
     results = []
     print(f"📊 최종 {len(tickers)}개 종목 대상 신규 장기 패턴 분석 시작...")
@@ -141,7 +127,7 @@ def screen_stocks():
 
     print("🔍 6대 조건 정밀 스캔 진행 중...")
     
-    # 만약 단일 종목만 다운로드되어 DataFrame이 아닌 Series 형태가 되었을 경우를 방지
+    # 단일 종목만 다운로드되어 DataFrame이 아닌 Series 형태가 되었을 경우 예방
     if isinstance(all_close_data, pd.Series):
         all_close_data = all_close_data.to_frame()
 
@@ -157,7 +143,7 @@ def screen_stocks():
             three_year_max = series_close.max()
             if curr_price < (three_year_max - 1e-5): continue 
 
-            # [조건 2] 최저가 부근 바닥 다지기 비율 검증
+            # [조건 2] 최저가 부근 바닥 다지기 비율 검증 (하방 경직성)
             absolute_min = series_close.min()
             floor_limit = absolute_min * 1.20
             weeks_in_floor = series_close[(series_close >= absolute_min) & (series_close <= floor_limit)].count()
@@ -222,7 +208,7 @@ def screen_stocks():
         
         html_content = f"""
         <h3 style="color: #1b5e20;">📈 미주 3년 신고가 돌파 초기형 완만 상승주 검색 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> 미국 상장 주식 전체 (러셀 소형주 하위 50% 제외 필터링 적용)</p>
+        <p><b>시장 범위:</b> S&P500, NASDAQ, Russell 2000 우량군 (시총 $1.5B 미만 소형주 완벽 제거)</p>
         <ul>
             <li style="color: #d32f2f;"><b>이번 주 주봉 종가가 최근 3년 최고가(신고가)를 기록 중인 종목</b></li>
             <li>최근 3년 중 최저가 부근(+20% 이내)에서 전체 기간의 50% 이상 머무르며 매물을 다진 종목</li>
@@ -236,7 +222,7 @@ def screen_stocks():
     else:
         no_result_html = f"""
         <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 알림 ({today_str})</h3>
-        <p>현재 미국 시장에 시총 필터링 및 6대 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 없습니다.</p>
+        <p>현재 미국 시장에 시총 필터링 및 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 없습니다.</p>
         """
         print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
         send_email(no_result_html, is_html=True)
