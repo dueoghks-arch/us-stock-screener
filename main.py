@@ -13,7 +13,6 @@ def get_all_tickers():
     print("⏳ [US] Fetching all US stock tickers (S&P500, NASDAQ, Russell 2000 전체)...")
     tickers = set()
     
-    # 💡 위키피디아 대신 신뢰도 높은 금융 데이터 오픈소스(GitHub)에서 미국 시장 전체 티커 리스트 직접 확보
     try:
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
         res = requests.get(url, timeout=15)
@@ -21,11 +20,9 @@ def get_all_tickers():
             raw_tickers = res.text.split('\n')
             for t in raw_tickers:
                 t_clean = t.strip().upper()
-                # ETF, 우선주, 테스트 종목 등을 거르고 보통주 위주로 필터링 (글자수 1~5자)
                 if t_clean and t_clean.isalpha() and 1 <= len(t_clean) <= 5:
-                    # yfinance 호환을 위해 점(.)을 하이픈(-)으로 변경 (예: BRK.B -> BRK-B)
                     tickers.add(t_clean)
-            print(f"✅ [US] Successfully gathered {len(tickers)} tickers. (러셀 2000 전체 포함)")
+            print(f"✅ [US] Successfully gathered {len(tickers)} tickers. (마스터 리스트 확보)")
         else:
             raise Exception("Non-200 response")
     except Exception as e:
@@ -33,6 +30,52 @@ def get_all_tickers():
         return ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA']
         
     return list(tickers)
+
+def filter_tickers_by_market_cap(tickers, percentile=50):
+    """
+    [신규 추가] 다운로드 전, 러셀2000 수준 이하의 초소형주를 필터링합니다.
+    전체 수집된 종목 중 시가총액 기준 상위 50% 종목만 선별하여 반환합니다.
+    """
+    print(f"🔍 [필터링] {len(tickers)}개 종목 중 시가총액 상위 {percentile}% 선별 중 (소형주 제거)...")
+    mkt_caps = {}
+    
+    # yf.download를 사용해 현재가와 발행주식수를 한번에 대량으로 가져와 시총을 계산하는 편이 유효하나,
+    # yfinance의 fast_info를 활용해 청크 단위로 빠르게 시가총액만 추출합니다.
+    chunk_size = 200
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i:i+chunk_size]
+        try:
+            # 여러 티커를 한 번에 조회하여 info를 가져오는 대안 (속도 최적화)
+            tickers_obj = yf.Tickers(' '.join(chunk))
+            for ticker in chunk:
+                try:
+                    # 각 종목의 fast_info에서 시가총액을 빠르게 가져옵니다 (네트워크 비용 최소화)
+                    mkt_cap = tickers_obj.tickers[ticker].fast_info.market_cap
+                    if mkt_cap and mkt_cap > 0:
+                        mkt_caps[ticker] = mkt_cap
+                except:
+                    continue
+        except Exception as e:
+            print(f"⚠️ 시총 필터링 중 청크 오류 발생 (건너뜀): {e}")
+        time.sleep(0.2)
+
+    if not mkt_caps:
+        print("⚠️ 시가총액 데이터를 가져오지 못했습니다. 필터링 없이 진행합니다.")
+        return tickers
+
+    # 데이터프레임 변환 후 상위 50% 컷오프 계산
+    df_cap = pd.DataFrame(list(mkt_caps.items()), columns=['Ticker', 'MarketCap'])
+    cutoff_value = df_cap['MarketCap'].quantile(1 - (percentile / 100))
+    
+    filtered_df = df_cap[df_cap['MarketCap'] >= cutoff_value]
+    filtered_tickers = filtered_df['Ticker'].tolist()
+    
+    # 정보 제공용 기준 시총 계산 (단위: 억 달러)
+    cutoff_in_billion = round(cutoff_value / 1e9, 2)
+    print(f"✅ 필터링 완료: 기준 시가총액 ${cutoff_in_billion}B 이상 종목 선별 완료.")
+    print(f"📊 대상 종목 축소: {len(tickers)}개 -> {len(filtered_tickers)}개")
+    
+    return filtered_tickers
 
 def send_email(content, is_html=False):
     """구글 SMTP 서비스를 이용한 안정적인 이메일 발송 함수"""
@@ -49,7 +92,6 @@ def send_email(content, is_html=False):
     msg['To'] = sender_email
 
     try:
-        # 안전한 SMTP_SSL 방식 유지
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, sender_email, msg.as_string())
@@ -58,15 +100,19 @@ def send_email(content, is_html=False):
         print(f"❌ 메일 발송 실패: {e}")
 
 def screen_stocks():
-    tickers = get_all_tickers()
-    results = []
-    print(f"📊 총 {len(tickers)}개 종목 대상 신규 장기 패턴 분석 시작...")
+    # 1. 전체 티커 수집
+    raw_tickers = get_all_tickers()
     
-    # ⚡ [속도 극대화] 러셀 2000이 추가되어 종목이 대폭 늘어났으므로 청크를 500개로 묶고 슬립을 0.5초로 단축
+    # 2. [수정] 러셀 소형주 유동성 및 노이즈 제거를 위한 시가총액 상위 50% 필터링 실행
+    tickers = filter_tickers_by_market_cap(raw_tickers, percentile=50)
+    
+    results = []
+    print(f"📊 최종 {len(tickers)}개 종목 대상 신규 장기 패턴 분석 시작...")
+    
     chunk_size = 500
     all_close_data = pd.DataFrame()
     
-    print("⏳ 데이터 다운로드 중...")
+    print("⏳ 주가 차트 데이터 다운로드 중...")
     for i in range(0, len(tickers), chunk_size):
         chunk_tickers = tickers[i:i+chunk_size]
         try:
@@ -94,6 +140,11 @@ def screen_stocks():
     one_year_ago = now - timedelta(days=365)
 
     print("🔍 6대 조건 정밀 스캔 진행 중...")
+    
+    # 만약 단일 종목만 다운로드되어 DataFrame이 아닌 Series 형태가 되었을 경우를 방지
+    if isinstance(all_close_data, pd.Series):
+        all_close_data = all_close_data.to_frame()
+
     for ticker in all_close_data.columns:
         try:
             series_close = all_close_data[ticker].dropna()
@@ -106,12 +157,11 @@ def screen_stocks():
             three_year_max = series_close.max()
             if curr_price < (three_year_max - 1e-5): continue 
 
-            # [조건 2] 최저가 부근 바닥 다지기 비율 검증 (하방 경직성)
+            # [조건 2] 최저가 부근 바닥 다지기 비율 검증
             absolute_min = series_close.min()
             floor_limit = absolute_min * 1.20
             weeks_in_floor = series_close[(series_close >= absolute_min) & (series_close <= floor_limit)].count()
             floor_ratio = weeks_in_floor / len(series_close)
-            
             if floor_ratio < 0.50: continue 
 
             # [조건 3] 박스권 상단 탈출 마진 검증 (+0% ~ +30% 이내)
@@ -120,7 +170,6 @@ def screen_stocks():
             
             past_max = box_period_series.max() 
             if pd.isna(past_max) or past_max == 0: continue
-            
             if not (past_max <= curr_price <= past_max * 1.30): continue
 
             # [조건 4] 완만한 장기 성장을 뜻하는 추세 기울기 평탄도 검증
@@ -135,10 +184,9 @@ def screen_stocks():
             slope = (total_gain_ratio) / (total_days / 1095.0)
             angle_rad = np.arctan(slope)
             angle_deg = np.degrees(angle_rad)
-            
             if angle_deg > 45 or angle_deg < -45: continue 
 
-            # 조건 통과 시 개별 정보 수집
+            # 조건 통과 시 개별 세부 정보 수집
             stock = yf.Ticker(ticker)
             trail_pe, fwd_pe, mkt_cap, short_name = 'N/A', 'N/A', 0, ticker
             try:
@@ -161,7 +209,7 @@ def screen_stocks():
                 'Forward PE': fwd_pe,
                 'Market Cap($B)': round(mkt_cap / 1e9, 2) if mkt_cap else 0
             })
-            print(f"🎯 3년 신고가 박스권 돌파 종목 포착: {ticker} (기울기: {round(angle_deg, 1)}°)")
+            print(f"🎯 조건 만족 종목 포착: {ticker} (기울기: {round(angle_deg, 1)}°)")
 
         except Exception as e:
             continue
@@ -174,7 +222,7 @@ def screen_stocks():
         
         html_content = f"""
         <h3 style="color: #1b5e20;">📈 미주 3년 신고가 돌파 초기형 완만 상승주 검색 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> 미국 상장 주식 전체 (S&P500, NASDAQ, Russell 2000 완벽 포함)</p>
+        <p><b>시장 범위:</b> 미국 상장 주식 전체 (러셀 소형주 하위 50% 제외 필터링 적용)</p>
         <ul>
             <li style="color: #d32f2f;"><b>이번 주 주봉 종가가 최근 3년 최고가(신고가)를 기록 중인 종목</b></li>
             <li>최근 3년 중 최저가 부근(+20% 이내)에서 전체 기간의 50% 이상 머무르며 매물을 다진 종목</li>
@@ -188,7 +236,7 @@ def screen_stocks():
     else:
         no_result_html = f"""
         <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 알림 ({today_str})</h3>
-        <p>현재 미국 시장에 6대 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 없습니다.</p>
+        <p>현재 미국 시장에 시총 필터링 및 6대 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 없습니다.</p>
         """
         print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
         send_email(no_result_html, is_html=True)
