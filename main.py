@@ -137,10 +137,71 @@ def screen_stocks():
             if not (past_max <= curr_price <= past_max * 1.30):
                 continue
 
-            # 참고용 각도 계산
+            # [조건 4] 참고용 각도 계산 (줄바꿈 및 생략 오류 완벽 수정)
             start_price = series_close.iloc[0]
             start_date = series_close.index[0]
             end_date = series_close.index[-1]
             total_days = (end_date - start_date).days
+            
             angle_deg = 0.0
-            if total_days > 0 and not pd.
+            if total_days > 0 and not pd.isna(start_price) and start_price > 0:
+                total_gain_ratio = (curr_price - start_price) / start_price
+                slope = (total_gain_ratio) / (total_days / 1095.0)
+                angle_deg = np.degrees(np.arctan(slope))
+
+            # [조건 5] 시가총액 및 세부 정보 검증
+            stock = yf.Ticker(ticker)
+            try:
+                mkt_cap_raw = stock.fast_info.market_cap
+                mkt_cap_billion = mkt_cap_raw / 1e9 if mkt_cap_raw else 0
+                if mkt_cap_billion < 1.5:
+                    continue
+                
+                info = stock.info
+                trail_pe = round(info.get('trailingPE'), 2) if info.get('trailingPE') else 'N/A'
+                fwd_pe = round(info.get('forwardPE'), 2) if info.get('forwardPE') else 'N/A'
+                short_name = info.get('shortName', ticker)
+            except Exception:
+                continue
+
+            results.append({
+                'Ticker': ticker,
+                'Name': short_name,
+                'Price($)': round(curr_price, 2),
+                '3Y Max($)': round(three_year_max, 2),
+                'Floor Ratio': f"{round(floor_ratio * 100, 1)}%",
+                'Trend Angle': f"{round(angle_deg, 1)}°",
+                'Current PE': trail_pe,
+                'Forward PE': fwd_pe,
+                'Market Cap($B)': round(mkt_cap_billion, 2)
+            })
+            print(f"🎯 [포착] 기술 조건 만족 종목 발견: {ticker} (기울기: {round(angle_deg, 1)}°)")
+
+        except Exception:
+            continue
+
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    if results:
+        final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
+        table_html = final_df.to_html(index=False, border=1, justify='center', classes='dataframe')
+        styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center; font-size: 14px;" border="1"')
+        
+        html_content = f"""
+        <h3 style="color: #1b5e20;">📈 미주 3년 신고가 박스권 돌파형 종목 전수조사 보고서 ({today_str})</h3>
+        <p><b>시장 범위:</b> S&P500, NASDAQ, Russell 2000 중형주 이상 (시가총액 $1.5B 이상)</p>
+        <ul>
+            <li><b>바닥밀집도 허들 완화:</b> 35% 이상 (3년 중 최소 1년 이상 바닥 다지기)</li>
+            <li><b>기울기 각도 무제한:</b> 오버슈팅 구간에 진입한 강력한 돌파 탄력주 포함</li>
+        </ul>
+        <br>
+        {styled_table}
+        """
+        print("🚀 조건 만족 종목 발견! 메일 발송을 시도합니다...")
+        send_email(html_content, is_html=True)
+    else:
+        no_result_html = f"""
+        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
+        <p><b>시장 범위:</b> S&P500, NASDAQ, Russell 2000 우량주군 전체 ($1.5B 이상)</p>
+        <hr>
+        <p>현재 조건 완화 기준(매집 35% 이상, 각도 제한 없음)을 만족하는 장기 박스권 돌파형 자산이 포착되지 않았습니다.</p>
+        """
