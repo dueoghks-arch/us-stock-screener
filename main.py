@@ -8,72 +8,60 @@ from email.mime.text import MIMEText
 import requests
 import time
 
-def get_all_tickers():
-    """안정적인 외부 오픈소스를 통해 미국 주요 상장사 전체 티커 리스트를 확보합니다."""
-    print("⏳ [US] Fetching all US stock tickers (S&P500, NASDAQ, Russell 2000 기본 풀)...")
+def get_filtered_us_tickers():
+    """
+    [차단 원천 차단] 
+    위키피디아에서 S&P 500 및 NASDAQ 100 종목을 직접 긁어옵니다.
+    미국 시장을 이끄는 실질적인 핵심 우량주 600여 개를 타깃으로 하여,
+    Yahoo Finance 서버 차단(Rate Limit)을 완벽하게 우회하고 노이즈를 제거합니다.
+    """
+    print("⏳ [US] 위키피디아로부터 S&P 500 및 NASDAQ 100 메이저 종목 수집 중...")
     tickers = set()
     
+    # 1. S&P 500 수집
     try:
-        url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
-        res = requests.get(url, timeout=15)
-        if res.status_code == 200:
-            raw_tickers = res.text.split('\n')
-            for t in raw_tickers:
-                t_clean = t.strip().upper()
-                if t_clean and t_clean.isalpha() and 1 <= len(t_clean) <= 5:
-                    tickers.add(t_clean)
-            print(f"✅ [US] Successfully gathered {len(tickers)} tickers. (마스터 리스트 확보)")
-        else:
-            raise Exception("Non-200 response")
+        url_sp = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        html_sp = requests.get(url_sp, timeout=15).text
+        df_sp = pd.read_html(html_sp)[0]
+        sp_tickers = df_sp['Symbol'].dropna().tolist()
+        for t in sp_tickers:
+            # yfinance 호환을 위해 점(.)을 하이픈(-)으로 변경 (예: BRK.B -> BRK-B)
+            tickers.add(t.strip().upper().replace('.', '-'))
+        print(f"✅ S&P 500 확보: {len(sp_tickers)}개")
     except Exception as e:
-        print(f"⚠️ [US] Master list 수집 실패: {e}. 기본 대형주로 대체합니다.")
-        return ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA']
+        print(f"⚠️ S&P 500 수집 실패: {e}")
+        
+    # 2. NASDAQ 100 수집
+    try:
+        url_nd = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        html_nd = requests.get(url_nd, timeout=15).text
+        df_nd = pd.read_html(html_nd)[4] # 보통 4번째 테이블에 위치
+        nd_tickers = df_nd['Ticker'].dropna().tolist()
+        for t in nd_tickers:
+            tickers.add(t.strip().upper().replace('.', '-'))
+        print(f"✅ NASDAQ 100 확보 (중복 제외 누적): {len(tickers)}개")
+    except Exception as e:
+        print(f"⚠️ NASDAQ 100 수집 실패: {e}")
+
+    # 예외 처리 백업
+    if not tickers:
+        print("⚠️ 지수 리스트 수집 전멸. 기본 대형주 세트로 대체합니다.")
+        return ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA', 'BRK-B', 'V', 'JNJ']
         
     return list(tickers)
-
-def filter_tickers_by_market_cap(tickers, min_market_cap_billion=1.5):
-    """
-    [완벽 최적화] 러셀2000 하위 50% 및 기타 초소형 페니주를 물리적 기준선으로 제거합니다.
-    $1.5B (약 15억 달러, 한화 약 2조 원)는 러셀2000 지수 내 중간값 수준으로, 
-    이 선을 적용하면 S&P500, 나스닥, 러셀2000의 실질적인 중상위권 우량주만 남습니다.
-    """
-    print(f"🔍 [필터링] {len(tickers)}개 종목 중 시가총액 ${min_market_cap_billion}B 이상 종목 선별 시작...")
-    filtered_tickers = []
-    chunk_size = 200
-    
-    for i in range(0, len(tickers), chunk_size):
-        chunk = tickers[i:i+chunk_size]
-        try:
-            # 여러 티커를 한 번에 객체화하여 fast_info 메모리 접근 속도 극대화
-            tickers_obj = yf.Tickers(' '.join(chunk))
-            for ticker in chunk:
-                try:
-                    mkt_cap_raw = tickers_obj.tickers[ticker].fast_info.market_cap
-                    if mkt_cap_raw:
-                        mkt_cap_billion = mkt_cap_raw / 1e9
-                        # 설정한 최소 시가총액 조건 충족 시에만 통과
-                        if mkt_cap_billion >= min_market_cap_billion:
-                            filtered_tickers.append(ticker)
-                except:
-                    continue
-        except Exception as e:
-            print(f"⚠️ 시총 필터링 중 청크 오류 발생 (건너뜀): {e}")
-        time.sleep(0.1)
-
-    print(f"📊 대상 종목 축소 완료: {len(tickers)}개 -> {len(filtered_tickers)}개 (소형 잡주 제거 완료)")
-    return filtered_tickers
 
 def send_email(content, is_html=False):
     """구글 SMTP 서비스를 이용한 안정적인 이메일 발송 함수"""
     sender_email = os.environ.get('EMAIL_USER')
     sender_password = os.environ.get('EMAIL_PASS')
+    
     if not sender_email or not sender_password:
         print("\n⚠️ 환경변수(EMAIL_USER, EMAIL_PASS) 설정이 되어있지 않습니다. 콘솔에 리포트를 출력합니다.\n")
         print(content)
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"📈 [미주 전수조사] 3년 박스권 돌파형 신고가 및 완만 상승주 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"📈 [미주 정밀조사] 3년 박스권 돌파형 신고가 및 완만 상승주 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
     msg['To'] = sender_email
 
@@ -84,24 +72,24 @@ def send_email(content, is_html=False):
         print("📧 메일 발송 성공!")
     except Exception as e:
         print(f"❌ 메일 발송 실패: {e}")
+        raise e
 
 def screen_stocks():
-    # 1. 전체 티커 수집
-    raw_tickers = get_all_tickers()
-    
-    # 2. 러셀 소형주 하위 위주 노이즈 제거를 위한 시가총액 최소 허들 ($1.5B) 필터링 실행
-    tickers = filter_tickers_by_market_cap(raw_tickers, min_market_cap_billion=1.5)
+    # 1. 차단 위험이 없는 지수 구성 종목(600+개) 선별 수집
+    tickers = get_filtered_us_tickers()
     
     results = []
-    print(f"📊 최종 {len(tickers)}개 종목 대상 신규 장기 패턴 분석 시작...")
+    print(f"📊 최종 {len(tickers)}개 우량 종목 대상 정밀 패턴 분석 시작...")
     
-    chunk_size = 500
+    # 종목 수가 줄었으므로 청크 사이즈를 줄이고 안정성을 확보합니다.
+    chunk_size = 100
     all_close_data = pd.DataFrame()
     
     print("⏳ 주가 차트 데이터 다운로드 중...")
     for i in range(0, len(tickers), chunk_size):
         chunk_tickers = tickers[i:i+chunk_size]
         try:
+            # 주봉 데이터 다운로드
             chunk_data = yf.download(chunk_tickers, period="3y", interval="1wk", progress=False, timeout=40)
             if not chunk_data.empty and 'Close' in chunk_data.columns:
                 chunk_close = chunk_data['Close']
@@ -110,13 +98,13 @@ def screen_stocks():
                 else:
                     all_close_data = pd.concat([all_close_data, chunk_close], axis=1)
             print(f"  > ⏳ {min(i + chunk_size, len(tickers))} / {len(tickers)} 종목 완료...")
-            time.sleep(0.5) 
+            time.sleep(1.5) # 야후 서버 안정화를 위해 슬립 시간을 조금 늘렸습니다.
         except Exception as e:
             print(f"⚠️ 청크 다운로드 중 오류 발생: {e}")
             continue
 
     if all_close_data.empty:
-        print("❌ 다운로드된 데이터가 없습니다.")
+        print("❌ 다운로드된 데이터가 없습니다. 스캔을 종료합니다.")
         return
 
     if all_close_data.index.tz is not None:
@@ -126,8 +114,6 @@ def screen_stocks():
     one_year_ago = now - timedelta(days=365)
 
     print("🔍 6대 조건 정밀 스캔 진행 중...")
-    
-    # 단일 종목만 다운로드되어 DataFrame이 아닌 Series 형태가 되었을 경우 예방
     if isinstance(all_close_data, pd.Series):
         all_close_data = all_close_data.to_frame()
 
@@ -143,7 +129,7 @@ def screen_stocks():
             three_year_max = series_close.max()
             if curr_price < (three_year_max - 1e-5): continue 
 
-            # [조건 2] 최저가 부근 바닥 다지기 비율 검증 (하방 경직성)
+            # [조건 2] 최저가 부근 바닥 다지기 비율 검증
             absolute_min = series_close.min()
             floor_limit = absolute_min * 1.20
             weeks_in_floor = series_close[(series_close >= absolute_min) & (series_close <= floor_limit)].count()
@@ -208,23 +194,19 @@ def screen_stocks():
         
         html_content = f"""
         <h3 style="color: #1b5e20;">📈 미주 3년 신고가 돌파 초기형 완만 상승주 검색 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500, NASDAQ, Russell 2000 우량군 (시총 $1.5B 미만 소형주 완벽 제거)</p>
-        <ul>
-            <li style="color: #d32f2f;"><b>이번 주 주봉 종가가 최근 3년 최고가(신고가)를 기록 중인 종목</b></li>
-            <li>최근 3년 중 최저가 부근(+20% 이내)에서 전체 기간의 50% 이상 머무르며 매물을 다진 종목</li>
-            <li>1년 전까지의 매물대 최고가 상단을 이제 막 +0% ~ +30% 이내로 돌파하기 시작한 종목</li>
-            <li>추세 기울기가 45도 이하로 오버슈팅 없이 완만하게 우상향해온 종목</li>
-        </ul><br>
+        <p><b>시장 범위:</b> S&P 500 및 NASDAQ 100 지수 편입 우량주군 전체</p>
         {styled_table}
         """
         print("🚀 조건 만족 종목 발견! 메일 발송을 시도합니다...")
         send_email(html_content, is_html=True)
     else:
         no_result_html = f"""
-        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 알림 ({today_str})</h3>
-        <p>현재 미국 시장에 시총 필터링 및 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 없습니다.</p>
+        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
+        <p><b>시장 범위:</b> S&P 500 및 NASDAQ 100 지수 편입 우량주군 전체</p>
+        <hr>
+        <p>현재 검사 대상 우량 종목 중 6대 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 포착되지 않았습니다.</p>
         """
-        print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
+        print("ℹ️ 조건 만족 종목이 없습니다. 공백 안내 메일 발송을 시도합니다...")
         send_email(no_result_html, is_html=True)
 
 if __name__ == "__main__":
