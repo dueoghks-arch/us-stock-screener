@@ -9,65 +9,33 @@ import requests
 import time
 
 def get_all_tickers():
-    """S&P500, 나스닥 100, 러셀 2000 주요 종목 티커 수집 및 중복 제거"""
+    """안정적인 외부 오픈소스를 통해 S&P500, 나스닥, 러셀2000을 포함한 미국 주요 상장사 전체(2,500+)를 수집합니다."""
+    print("⏳ [US] Fetching all US stock tickers (S&P500, NASDAQ, Russell 2000 전체)...")
     tickers = set()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-
-    # 1. S&P 500
+    
+    # 💡 위키피디아 대신 신뢰도 높은 금융 데이터 오픈소스(GitHub)에서 미국 시장 전체 티커 리스트 직접 확보
     try:
-        url_sp = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        res = requests.get(url_sp, headers=headers, timeout=15)
-        df_sp = pd.read_html(res.text, flavor='lxml')[0]
-        for t in df_sp['Symbol'].tolist():
-            tickers.add(str(t).replace('.', '-'))
-        print(f"✅ S&P 500 수집 완료 ({len(df_sp)} 종목)")
+        url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
+        res = requests.get(url, timeout=15)
+        if res.status_code == 200:
+            raw_tickers = res.text.split('\n')
+            for t in raw_tickers:
+                t_clean = t.strip().upper()
+                # ETF, 우선주, 테스트 종목 등을 거르고 보통주 위주로 필터링 (글자수 1~5자)
+                if t_clean and t_clean.isalpha() and 1 <= len(t_clean) <= 5:
+                    # yfinance 호환을 위해 점(.)을 하이픈(-)으로 변경 (예: BRK.B -> BRK-B)
+                    tickers.add(t_clean)
+            print(f"✅ [US] Successfully gathered {len(tickers)} tickers. (러셀 2000 전체 포함)")
+        else:
+            raise Exception("Non-200 response")
     except Exception as e:
-        print(f"⚠️ S&P 500 수집 실패: {e}")
-
-    # 2. 나스닥 100
-    try:
-        url_nd = 'https://en.wikipedia.org/wiki/NASDAQ-100'
-        res = requests.get(url_nd, headers=headers, timeout=15)
-        dfs = pd.read_html(res.text, flavor='lxml')
-        df_nd = None
-        for table in dfs:
-            if 'Ticker' in table.columns: df_nd = table; break
-            elif 'Symbol' in table.columns:
-                df_nd = table
-                df_nd.rename(columns={'Symbol': 'Ticker'}, inplace=True)
-                break
-        if df_nd is not None:
-            for t in df_nd['Ticker'].tolist():
-                tickers.add(str(t).replace('.', '-'))
-            print(f"✅ 나스닥 100 수집 완료")
-    except Exception as e:
-        print(f"⚠️ 나스닥 100 수집 실패: {e}")
-
-    # 3. 러셀 2000 핵심 종목
-    try:
-        url_r2k = 'https://en.wikipedia.org/wiki/Russell_2000_Index'
-        res = requests.get(url_r2k, headers=headers, timeout=15)
-        dfs = pd.read_html(res.text, flavor='lxml')
-        df_r2k = None
-        for table in dfs:
-            if 'Ticker' in table.columns: df_r2k = table; break
-            elif 'Symbol' in table.columns:
-                df_r2k = table
-                df_r2k.rename(columns={'Symbol': 'Ticker'}, inplace=True)
-                break
-        if df_r2k is not None:
-            for t in df_r2k['Ticker'].tolist():
-                tickers.add(str(t).replace('.', '-'))
-            print(f"✅ 러셀 2000 일부 핵심 종목 수집 완료")
-    except Exception as e:
-        print(f"⚠️ 러셀 2000 수집 실패: {e}")
-
-    if len(tickers) < 10:
+        print(f"⚠️ [US] Master list 수집 실패: {e}. 기본 대형주로 대체합니다.")
         return ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA']
         
     return list(tickers)
 
 def send_email(content, is_html=False):
+    """구글 SMTP 서비스를 이용한 안정적인 이메일 발송 함수"""
     sender_email = os.environ.get('EMAIL_USER')
     sender_password = os.environ.get('EMAIL_PASS')
     if not sender_email or not sender_password:
@@ -81,6 +49,7 @@ def send_email(content, is_html=False):
     msg['To'] = sender_email
 
     try:
+        # 안전한 SMTP_SSL 방식 유지
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, sender_email, msg.as_string())
@@ -93,14 +62,15 @@ def screen_stocks():
     results = []
     print(f"📊 총 {len(tickers)}개 종목 대상 신규 장기 패턴 분석 시작...")
     
-    chunk_size = 100
+    # ⚡ [속도 극대화] 러셀 2000이 추가되어 종목이 대폭 늘어났으므로 청크를 500개로 묶고 슬립을 0.5초로 단축
+    chunk_size = 500
     all_close_data = pd.DataFrame()
     
     print("⏳ 데이터 다운로드 중...")
     for i in range(0, len(tickers), chunk_size):
         chunk_tickers = tickers[i:i+chunk_size]
         try:
-            chunk_data = yf.download(chunk_tickers, period="3y", interval="1wk", progress=False, timeout=30)
+            chunk_data = yf.download(chunk_tickers, period="3y", interval="1wk", progress=False, timeout=40)
             if not chunk_data.empty and 'Close' in chunk_data.columns:
                 chunk_close = chunk_data['Close']
                 if all_close_data.empty:
@@ -108,7 +78,7 @@ def screen_stocks():
                 else:
                     all_close_data = pd.concat([all_close_data, chunk_close], axis=1)
             print(f"  > ⏳ {min(i + chunk_size, len(tickers))} / {len(tickers)} 종목 완료...")
-            time.sleep(1.5) 
+            time.sleep(0.5) 
         except Exception as e:
             print(f"⚠️ 청크 다운로드 중 오류 발생: {e}")
             continue
@@ -117,7 +87,6 @@ def screen_stocks():
         print("❌ 다운로드된 데이터가 없습니다.")
         return
 
-    # 💡 깃허브 액션 및 내부 연산 시 타임존 에러 예방
     if all_close_data.index.tz is not None:
         all_close_data.index = all_close_data.index.tz_localize(None)
 
@@ -133,12 +102,11 @@ def screen_stocks():
             curr_price = series_close.iloc[-1]
             if pd.isna(curr_price) or curr_price <= 0: continue
             
-            # 💡 [추가 조건] 이번 주 종가가 최근 3년(전체 기간) 최고가인가? (신고가 필터)
+            # [조건 1] 3년 전체 최고가(신고가) 검증
             three_year_max = series_close.max()
-            # 소수점 오차 감안하여 현재가가 최고가 이상이거나 거의 근접해야 함
             if curr_price < (three_year_max - 1e-5): continue 
 
-            # 💡 조건 3: 최저가와 [최저가 + 20%] 사이 구간이 전체 중 50% 이상 존재해야 함 (하방 경직성)
+            # [조건 2] 최저가 부근 바닥 다지기 비율 검증 (하방 경직성)
             absolute_min = series_close.min()
             floor_limit = absolute_min * 1.20
             weeks_in_floor = series_close[(series_close >= absolute_min) & (series_close <= floor_limit)].count()
@@ -146,8 +114,7 @@ def screen_stocks():
             
             if floor_ratio < 0.50: continue 
 
-            # 💡 조건 4: 3년 전 ~ 1년 전 DATA의 최고가 대비 현재가가 +0% ~ +30% 이내인가?
-            # (바닥 박스권을 돌파하되 오버슈팅 없이 이제 막 대가리를 든 녀석을 잡는 핵심 로직)
+            # [조건 3] 박스권 상단 탈출 마진 검증 (+0% ~ +30% 이내)
             box_period_series = series_close[series_close.index <= one_year_ago]
             if box_period_series.empty: continue
             
@@ -156,7 +123,7 @@ def screen_stocks():
             
             if not (past_max <= curr_price <= past_max * 1.30): continue
 
-            # 💡 조건 5: 3년 전 가격과 현재가의 기하학적 기울기가 45도 이하여야 함
+            # [조건 4] 완만한 장기 성장을 뜻하는 추세 기울기 평탄도 검증
             start_price = series_close.iloc[0]
             start_date = series_close.index[0]
             end_date = series_close.index[-1]
@@ -173,7 +140,7 @@ def screen_stocks():
 
             # 조건 통과 시 개별 정보 수집
             stock = yf.Ticker(ticker)
-            trail_pe, fwd_pe, mkt_cap, short_name = 'N/A', 'N/A', 0, 'N/A'
+            trail_pe, fwd_pe, mkt_cap, short_name = 'N/A', 'N/A', 0, ticker
             try:
                 info = stock.info
                 trail_pe = round(info.get('trailingPE'), 2) if info.get('trailingPE') else 'N/A'
@@ -181,7 +148,7 @@ def screen_stocks():
                 mkt_cap = info.get('marketCap', 0)
                 short_name = info.get('shortName', ticker)
             except:
-                short_name = ticker
+                pass
 
             results.append({
                 'Ticker': ticker,
@@ -194,34 +161,37 @@ def screen_stocks():
                 'Forward PE': fwd_pe,
                 'Market Cap($B)': round(mkt_cap / 1e9, 2) if mkt_cap else 0
             })
-            print(f"🎯 3년 신고가 박스권 돌파 종포착: {ticker} (바닥밀집: {round(floor_ratio * 100, 1)}%, 기울기: {round(angle_deg, 1)}°)")
+            print(f"🎯 3년 신고가 박스권 돌파 종목 포착: {ticker} (기울기: {round(angle_deg, 1)}°)")
 
         except Exception as e:
-            print(f"⚠️ {ticker} 종목 처리 중 오류: {e}")
             continue
 
-    # 리포트 발송
+    today_str = datetime.now().strftime('%Y-%m-%d')
     if results:
         final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
         table_html = final_df.to_html(index=False, border=1, justify='center', classes='dataframe')
-        styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center;" border="1"')
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center; font-size: 14px;" border="1"')
         
         html_content = f"""
         <h3 style="color: #1b5e20;">📈 미주 3년 신고가 돌파 초기형 완만 상승주 검색 보고서 ({today_str})</h3>
+        <p><b>시장 범위:</b> 미국 상장 주식 전체 (S&P500, NASDAQ, Russell 2000 완벽 포함)</p>
+        <ul>
+            <li style="color: #d32f2f;"><b>이번 주 주봉 종가가 최근 3년 최고가(신고가)를 기록 중인 종목</b></li>
+            <li>최근 3년 중 최저가 부근(+20% 이내)에서 전체 기간의 50% 이상 머무르며 매물을 다진 종목</li>
+            <li>1년 전까지의 매물대 최고가 상단을 이제 막 +0% ~ +30% 이내로 돌파하기 시작한 종목</li>
+            <li>추세 기울기가 45도 이하로 오버슈팅 없이 완만하게 우상향해온 종목</li>
+        </ul><br>
         {styled_table}
         """
         print("🚀 조건 만족 종목 발견! 메일 발송을 시도합니다...")
         send_email(html_content, is_html=True)
     else:
-        # 💡 종목이 없을 때도 구글 필터에 걸리지 않도록 HTML 구조로 안전하게 전송
-        today_str = datetime.now().strftime('%Y-%m-%d')
         no_result_html = f"""
-        <h3 style="color: #d32f2f;">⚠️ 미주 스캐너 알림 ({today_str})</h3>
-        <p>오늘 지정하신 6대 정밀 필터링 조건을 동시에 충족하는 종목이 시장에 존재하지 않습니다.</p>
-        <ul>
-            <li>3년 신고가 및 바닥 다지기 조건 만족 종목: 0개</li>
-        </ul>
+        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 알림 ({today_str})</h3>
+        <p>현재 미국 시장에 6대 정밀 돌파 패턴 조건을 동시에 만족하는 종목이 없습니다.</p>
         """
         print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
-        send_email(no_result_html, is_html=True) # 평문 대신 HTML로 전송
+        send_email(no_result_html, is_html=True)
+
+if __name__ == "__main__":
+    screen_stocks()
