@@ -204,24 +204,24 @@ def screen_stocks():
     if results:
         final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
         table_html = final_df.to_html(index=False, border=1, justify='center', classes='dataframe')
-        
         styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center;" border="1"')
         today_str = datetime.now().strftime('%Y-%m-%d')
         
         html_content = f"""
         <h3 style="color: #1b5e20;">📈 미주 3년 신고가 돌파 초기형 완만 상승주 검색 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500, NASDAQ 100, Russell 2000 주요 기업</p>
-        <ul>
-            <li style="color: #d32f2f;"><b>[신규] 이번 주 주봉 종가가 최근 3년 최고가(신고가)인 종목</b></li>
-            <li>최근 3년 주봉 종가 기준, 최저가~최저가+20% 범위 내에 머문 기간이 전체의 50% 이상인 강한 하방 경직성 종목</li>
-            <li>3년 전~1년 전 구간의 최고가 대비 현재가가 <b>+0% ~ +30% 위</b>에 안착해 박스권을 이제 막 돌파한 종목</li>
-            <li>3년 전 시점부터 현재까지의 장기 추세 기울기가 45도 이하로 오버슈팅 없이 완만하게 우상향하는 종목</li>
-        </ul><br>
         {styled_table}
         """
+        print("🚀 조건 만족 종목 발견! 메일 발송을 시도합니다...")
         send_email(html_content, is_html=True)
     else:
-        send_email("선택하신 필터링 조건(3년 박스권 상단 돌파 및 장기 바닥 밀집형 신고가)을 동시에 충족하는 종목이 현재 없습니다.")
-
-if __name__ == "__main__":
-    screen_stocks()
+        # 💡 종목이 없을 때도 구글 필터에 걸리지 않도록 HTML 구조로 안전하게 전송
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        no_result_html = f"""
+        <h3 style="color: #d32f2f;">⚠️ 미주 스캐너 알림 ({today_str})</h3>
+        <p>오늘 지정하신 6대 정밀 필터링 조건을 동시에 충족하는 종목이 시장에 존재하지 않습니다.</p>
+        <ul>
+            <li>3년 신고가 및 바닥 다지기 조건 만족 종목: 0개</li>
+        </ul>
+        """
+        print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
+        send_email(no_result_html, is_html=True) # 평문 대신 HTML로 전송
