@@ -4,7 +4,7 @@ on:
   schedule:
     # 💡 한국 시간(KST) 금요일 21시 21분 자동 실행
     # UTC 기준: 금요일 오전 11시 21분 (18:00 - 9시간)
-    - cron: '21 11 * * 5'
+    - cron: '21 11 * * 1-5'
   workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
