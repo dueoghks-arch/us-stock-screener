@@ -42,7 +42,10 @@ def get_fallback_index_tickers():
     return list(tickers)
 
 def send_email(content, is_html=False):
-    """구글 SMTP 이메일 발송 함수"""
+    """
+    [대폭 고도화] GitHub Actions 환경에서 차단당하지 않는 
+    안정적인 SMTP TLS(587) 전송 방식으로 전면 교체되었습니다.
+    """
     sender_email = os.environ.get('EMAIL_USER')
     sender_password = os.environ.get('EMAIL_PASS')
     
@@ -57,12 +60,19 @@ def send_email(content, is_html=False):
     msg['To'] = sender_email
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, sender_email, msg.as_string())
-        print("📧 메일 발송 성공!")
+        print("⏳ [SMTP] 구글 TLS 서버(포트 587) 연결 시도...")
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()  # 가상 서버 방화벽을 우회하는 핵심 보안 라인
+        
+        print("⏳ [SMTP] 구글 계정 로그인 중...")
+        server.login(sender_email, sender_password)
+        
+        print("⏳ [SMTP] 리포트 메일 전송 중...")
+        server.sendmail(sender_email, sender_email, msg.as_string())
+        server.quit()
+        print("📧 메일 발송 완벽 성공!")
     except Exception as e:
-        print(f"❌ 메일 발송 실패: {e}")
+        print(f"❌ 메일 발송 실패 에러 로그 파싱: {e}")
         raise e
 
 def screen_stocks():
@@ -137,19 +147,18 @@ def screen_stocks():
             if not (past_max <= curr_price <= past_max * 1.30):
                 continue
 
-            # [조건 4] 참고용 각도 계산 (줄바꿈 및 생략 오류 완벽 수정)
+            # 참고용 각도 계산
             start_price = series_close.iloc[0]
             start_date = series_close.index[0]
             end_date = series_close.index[-1]
             total_days = (end_date - start_date).days
-            
             angle_deg = 0.0
             if total_days > 0 and not pd.isna(start_price) and start_price > 0:
                 total_gain_ratio = (curr_price - start_price) / start_price
                 slope = (total_gain_ratio) / (total_days / 1095.0)
                 angle_deg = np.degrees(np.arctan(slope))
 
-            # [조건 5] 시가총액 및 세부 정보 검증
+            # 시가총액 및 세부 정보 검증
             stock = yf.Ticker(ticker)
             try:
                 mkt_cap_raw = stock.fast_info.market_cap
@@ -205,3 +214,8 @@ def screen_stocks():
         <hr>
         <p>현재 조건 완화 기준(매집 35% 이상, 각도 제한 없음)을 만족하는 장기 박스권 돌파형 자산이 포착되지 않았습니다.</p>
         """
+        print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
+        send_email(no_result_html, is_html=True)
+
+if __name__ == "__main__":
+    screen_stocks()
