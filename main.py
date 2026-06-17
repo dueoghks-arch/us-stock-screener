@@ -130,10 +130,10 @@ def screen_stocks():
 
             # [조건 2] 바닥 다지기 비율 검증 (35% 완화)
             absolute_min = series_close.min()
-            floor_limit = absolute_min * 1.20
+            floor_limit = absolute_min * 1.50
             weeks_in_floor = series_close[(series_close >= absolute_min) & (series_close <= floor_limit)].count()
             floor_ratio = weeks_in_floor / len(series_close)
-            if floor_ratio < 0.35:
+            if floor_ratio < 0.20:
                 continue 
 
             # [조건 3] 박스권 상단 탈출 마진 검증 (+0% ~ +30% 이내)
