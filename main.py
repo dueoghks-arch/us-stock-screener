@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import smtplib
 from email.mime.text import MIMEText
@@ -42,10 +42,7 @@ def get_fallback_index_tickers():
     return list(tickers)
 
 def send_email(content, is_html=False):
-    """
-    [대폭 고도화] GitHub Actions 환경에서 차단당하지 않는 
-    안정적인 SMTP TLS(587) 전송 방식으로 전면 교체되었습니다.
-    """
+    """SMTP TLS(587) 이메일 전송"""
     sender_email = os.environ.get('EMAIL_USER')
     sender_password = os.environ.get('EMAIL_PASS')
     
@@ -55,19 +52,15 @@ def send_email(content, is_html=False):
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"📈 [미주 전수조사] 3년 박스권 돌파형 장기 신고가 종목 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"📈 [미주 전수조사] 이동평균선 돌파형 52주 신고가 종목 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
     msg['To'] = sender_email
 
     try:
         print("⏳ [SMTP] 구글 TLS 서버(포트 587) 연결 시도...")
         server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()  # 가상 서버 방화벽을 우회하는 핵심 보안 라인
-        
-        print("⏳ [SMTP] 구글 계정 로그인 중...")
+        server.starttls() 
         server.login(sender_email, sender_password)
-        
-        print("⏳ [SMTP] 리포트 메일 전송 중...")
         server.sendmail(sender_email, sender_email, msg.as_string())
         server.quit()
         print("📧 메일 발송 완벽 성공!")
@@ -78,15 +71,15 @@ def send_email(content, is_html=False):
 def screen_stocks():
     raw_tickers = get_us_filtered_tickers_master()
     results = []
-    
     chunk_size = 150
     all_close_data = pd.DataFrame()
     
-    print(f"📊 총 {len(raw_tickers)}개 기본 풀 대상 주가 데이터 다운로드 시작...")
+    # 200주 이평선을 구해야 하므로 다운로드 기간을 5년(5y)으로 연장
+    print(f"📊 총 {len(raw_tickers)}개 기본 풀 대상 주가 데이터(5년치) 다운로드 시작...")
     for i in range(0, len(raw_tickers), chunk_size):
         chunk_tickers = raw_tickers[i:i+chunk_size]
         try:
-            chunk_data = yf.download(chunk_tickers, period="3y", interval="1wk", progress=False, timeout=50)
+            chunk_data = yf.download(chunk_tickers, period="5y", interval="1wk", progress=False, timeout=50)
             if not chunk_data.empty and 'Close' in chunk_data.columns:
                 chunk_close = chunk_data['Close']
                 if all_close_data.empty:
@@ -106,59 +99,80 @@ def screen_stocks():
     if all_close_data.index.tz is not None:
         all_close_data.index = all_close_data.index.tz_localize(None)
 
-    now = datetime.now()
-    one_year_ago = now - timedelta(days=365)
-
-    print("🔍 [필터링 & 스캔] 기술적 돌파 조건 연산 중...")
+    print("🔍 [필터링 & 스캔] 이동평균선 돌파 및 신고가 조건 연산 중...")
     if isinstance(all_close_data, pd.Series):
         all_close_data = all_close_data.to_frame()
 
     for ticker in all_close_data.columns:
         try:
             series_close = all_close_data[ticker].dropna()
-            if len(series_close) < 100:
+            # 200주 이평선을 계산해야 하므로 최소 200주 이상의 데이터가 필요
+            if len(series_close) < 200:
                 continue 
             
             curr_price = series_close.iloc[-1]
             if pd.isna(curr_price) or curr_price <= 0:
                 continue
             
-            # [조건 1] 3년 전체 최고가(신고가) 검증
-            three_year_max = series_close.max()
-            if curr_price < (three_year_max - 1e-5):
-                continue 
+            # 주간 이평선 계산
+            sma5 = series_close.rolling(window=5).mean()
+            sma30 = series_close.rolling(window=30).mean()
+            sma200 = series_close.rolling(window=200).mean()
 
-            # [조건 2] 바닥 다지기 비율 검증 (35% 완화)
-            absolute_min = series_close.min()
-            floor_limit = absolute_min * 1.50
-            weeks_in_floor = series_close[(series_close >= absolute_min) & (series_close <= floor_limit)].count()
-            floor_ratio = weeks_in_floor / len(series_close)
-            if floor_ratio < 0.20:
-                continue 
-
-            # [조건 3] 박스권 상단 탈출 마진 검증 (+0% ~ +30% 이내)
-            box_period_series = series_close[series_close.index <= one_year_ago]
-            if box_period_series.empty:
+            # [조건 3] 현재가가 최근 52주 주간 종가 기준 가장 높은 가격(신고가) 달성
+            last_52w_max = series_close.tail(52).max()
+            if curr_price < (last_52w_max - 1e-5):
                 continue
+
+            # [조건 2] 최근 6개월(26주) 내 30주 이평선이 200주 상향 돌파 (골든크로스)
+            # 최근 27주 데이터를 가져와 전주와 이번주의 크로스오버 확인
+            sma30_27w = sma30.tail(27)
+            sma200_27w = sma200.tail(27)
             
-            past_max = box_period_series.max() 
-            if pd.isna(past_max) or past_max == 0:
-                continue
-            if not (past_max <= curr_price <= past_max * 1.30):
+            cond2_met = False
+            for j in range(1, len(sma30_27w)):
+                prev30, curr30_val = sma30_27w.iloc[j-1], sma30_27w.iloc[j]
+                prev200, curr200_val = sma200_27w.iloc[j-1], sma200_27w.iloc[j]
+                
+                # 상향 돌파 (이전 주엔 30주가 200주보다 낮거나 같았고, 이번 주엔 높아짐)
+                if prev30 <= prev200 and curr30_val > curr200_val:
+                    cond2_met = True
+                    break
+            
+            if not cond2_met:
                 continue
 
-            # 참고용 각도 계산
-            start_price = series_close.iloc[0]
-            start_date = series_close.index[0]
-            end_date = series_close.index[-1]
-            total_days = (end_date - start_date).days
-            angle_deg = 0.0
-            if total_days > 0 and not pd.isna(start_price) and start_price > 0:
-                total_gain_ratio = (curr_price - start_price) / start_price
-                slope = (total_gain_ratio) / (total_days / 1095.0)
-                angle_deg = np.degrees(np.arctan(slope))
+            # [조건 1] 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음
+            # 최근 9주 데이터를 가져와 크로스오버 및 근접도 확인
+            sma5_9w = sma5.tail(9)
+            sma30_9w = sma30.tail(9)
+            sma200_9w = sma200.tail(9)
+            price_9w = series_close.tail(9)
 
-            # 시가총액 및 세부 정보 검증
+            cond1_met = False
+            for j in range(1, len(sma5_9w)):
+                prev5, curr5_val = sma5_9w.iloc[j-1], sma5_9w.iloc[j]
+                prev30_1, curr30_1 = sma30_9w.iloc[j-1], sma30_9w.iloc[j]
+                prev200_1, curr200_1 = sma200_9w.iloc[j-1], sma200_9w.iloc[j]
+                p_val = price_9w.iloc[j]
+
+                # 상향 돌파 여부
+                cross_30 = (prev5 <= prev30_1 and curr5_val > curr30_1)
+                cross_200 = (prev5 <= prev200_1 and curr5_val > curr200_1)
+                
+                # 5주 이평선이 30주/200주 이평선과 주가(p_val) 대비 10% 이내로 근접했는지
+                dist_30 = abs(curr5_val - curr30_1) / p_val
+                dist_200 = abs(curr5_val - curr200_1) / p_val
+                close_prox = (dist_30 <= 0.10) and (dist_200 <= 0.10)
+
+                if cross_30 or cross_200 or close_prox:
+                    cond1_met = True
+                    break
+
+            if not cond1_met:
+                continue
+
+            # 시가총액 및 세부 정보 수집
             stock = yf.Ticker(ticker)
             try:
                 mkt_cap_raw = stock.fast_info.market_cap
@@ -177,14 +191,15 @@ def screen_stocks():
                 'Ticker': ticker,
                 'Name': short_name,
                 'Price($)': round(curr_price, 2),
-                '3Y Max($)': round(three_year_max, 2),
-                'Floor Ratio': f"{round(floor_ratio * 100, 1)}%",
-                'Trend Angle': f"{round(angle_deg, 1)}°",
+                '52W High($)': round(last_52w_max, 2),
+                '5W SMA': round(sma5.iloc[-1], 2),
+                '30W SMA': round(sma30.iloc[-1], 2),
+                '200W SMA': round(sma200.iloc[-1], 2),
                 'Current PE': trail_pe,
                 'Forward PE': fwd_pe,
                 'Market Cap($B)': round(mkt_cap_billion, 2)
             })
-            print(f"🎯 [포착] 기술 조건 만족 종목 발견: {ticker} (기울기: {round(angle_deg, 1)}°)")
+            print(f"🎯 [포착] 모든 이평선/신고가 조건 만족 종목 발견: {ticker}")
 
         except Exception:
             continue
@@ -196,13 +211,16 @@ def screen_stocks():
         styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center; font-size: 14px;" border="1"')
         
         html_content = f"""
-        <h3 style="color: #1b5e20;">📈 미주 3년 신고가 박스권 돌파형 종목 전수조사 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500, NASDAQ, Russell 2000 중형주 이상 (시가총액 $1.5B 이상)</p>
-        <ul>
-            <li><b>바닥밀집도 허들 완화:</b> 35% 이상 (3년 중 최소 1년 이상 바닥 다지기)</li>
-            <li><b>기울기 각도 무제한:</b> 오버슈팅 구간에 진입한 강력한 돌파 탄력주 포함</li>
-        </ul>
-        <br>
+        <h3 style="color: #1b5e20;">📈 미주 이동평균선 돌파 & 52주 신고가 스캔 리포트 ({today_str})</h3>
+        <p><b>시장 범위:</b> S&P500, NASDAQ, 우량주군 전체 (시가총액 $1.5B 이상)</p>
+        <div style="background-color: #f1f8e9; padding: 15px; border-left: 5px solid #4caf50; margin-bottom: 20px;">
+            <p style="margin: 0;"><b>[필터링 통과 조건]</b></p>
+            <ul style="margin-top: 5px; margin-bottom: 0;">
+                <li><b>조건 1:</b> 최근 8주 내 5주 이평선이 30주/200주 상향 돌파했거나 주가의 10% 이내 초근접</li>
+                <li><b>조건 2:</b> 최근 6개월 내 30주 이평선이 200주 상향 돌파 (골든크로스)</li>
+                <li><b>조건 3:</b> 현재가가 최근 52주(1년) 주간 종가 기준 최고가 달성</li>
+            </ul>
+        </div>
         {styled_table}
         """
         print("🚀 조건 만족 종목 발견! 메일 발송을 시도합니다...")
@@ -210,9 +228,9 @@ def screen_stocks():
     else:
         no_result_html = f"""
         <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500, NASDAQ, Russell 2000 우량주군 전체 ($1.5B 이상)</p>
+        <p><b>시장 범위:</b> 미국 우량주 전체 ($1.5B 이상)</p>
         <hr>
-        <p>현재 조건 완화 기준(매집 20% 이상, 최저가~최저가*1.5 주봉 가격이 매집 박스권 기준)을 만족하는 장기 박스권 돌파형 자산이 포착되지 않았습니다.</p>
+        <p>현재 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 3가지 강력한 상승 모멘텀 조건을 모두 만족하는 자산이 포착되지 않았습니다.</p>
         """
         print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
         send_email(no_result_html, is_html=True)
