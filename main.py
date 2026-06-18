@@ -44,7 +44,7 @@ def get_us_index_tickers():
     except Exception as e:
         print(f"⚠️ [Index] 나스닥 100 수집 실패: {e}")
         
-    return sp_tickers, nasdaq_tickers
+    return sp_tickers, nasdaq_set := nasdaq_tickers
 
 def get_us_filtered_tickers_master():
     """미국 전체 시장 종목을 가져와 인덱스 종목과 합성 유니버스를 만듭니다."""
@@ -54,7 +54,6 @@ def get_us_filtered_tickers_master():
     
     try:
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers_with_sectors.csv"
-        # 버그 수정: requests로 먼저 받아와서 timeout 처리 후 io.StringIO 사용
         response = requests.get(url, timeout=20)
         df_master = pd.read_csv(io.StringIO(response.text))
         
@@ -69,7 +68,6 @@ def get_us_filtered_tickers_master():
         print(f"⚠️ [US Master] 전체 풀 수집 실패: {e}. 지수 종목 기반으로 강제 전환합니다.")
         return list(sp_set | nasdaq_set), sp_set, nasdaq_set
 
-    # S&P500, 나스닥100, 그리고 전체 시장 종목을 하나로 병합 (중복 제거)
     final_pool = list(all_tickers | sp_set | nasdaq_set)
     return final_pool, sp_set, nasdaq_set
 
@@ -134,7 +132,6 @@ def screen_stocks():
         all_close_data = all_close_data.to_frame()
 
     print("🔍 [시가총액 필터링] 지수 미포함 중소형주(러셀군) 시총 조사 및 상위 50% 커트라인 연산 중...")
-    # 1차 패스: 전체 종목의 시가총액 정보 수집 및 러셀군 커트라인 계산
     mkt_caps = {}
     russell_caps = []
     
@@ -144,44 +141,40 @@ def screen_stocks():
             if len(series_close) <= 200:
                 continue
             
-            # yfinance fast_info 이용한 빠른 시총 계산
+            # 버그 수정: fast_info 대신 가장 안전한 전통적 .info 구조 사용
             stock = yf.Ticker(ticker)
-            mkt_cap_raw = stock.fast_info.market_cap
+            info = stock.info
+            mkt_cap_raw = info.get('marketCap')
+            
             if mkt_cap_raw and mkt_cap_raw > 0:
                 mkt_caps[ticker] = mkt_cap_raw
-                # S&P 500과 나스닥 100에 포함되지 않은 종목들만 러셀/중소형주 풀로 모음
                 if (ticker not in sp_set) and (ticker not in nasdaq_set):
                     russell_caps.append(mkt_cap_raw)
         except Exception:
             continue
 
-    # 러셀군 시가총액 상위 50% (중앙값) 구하기
     if russell_caps:
-        russell_cutoff = np.percentile(russell_caps, 50)  # 상위 50% 컷오프 지점
+        russell_cutoff = np.percentile(russell_caps, 50)
         print(f"✅ 러셀/중소형주 유니버스 시총 상위 50% 컷오프 기준점: 약 ${round(russell_cutoff / 1e9, 2)}B 이상")
     else:
-        russell_cutoff = 1.5 * 1e9  # 백업 기준선 ($1.5B)
+        russell_cutoff = 1.5 * 1e9
         print(f"⚠️ 러셀군 시총 연산 불가로 기본 허들($1.5B) 적용")
 
     print("🔍 [기술적 지표 스캔] 이동평균선 돌파(국장 OR 로직) 및 52주 신고가 연산 시작...")
     
-    # 2차 패스: 필터링 통과한 종목 대상 트리플 AND 조건 연산
     for ticker in all_close_data.columns:
         try:
-            # 시총 데이터가 없거나 유니버스 기준에 미달하면 제외
             if ticker not in mkt_caps:
                 continue
                 
             current_cap = mkt_caps[ticker]
             is_index_stock = (ticker in sp_set) or (ticker in nasdaq_set)
             
-            # [유니버스 필터] S&P500/나스닥100이 아니고, 러셀 상위 50%보다 시총이 낮으면 탈락
             if (not is_index_stock) and (current_cap < russell_cutoff):
                 continue
 
             series_close = all_close_data[ticker].dropna()
             
-            # 주간 이평선 계산
             ma5 = series_close.rolling(window=5).mean()
             ma30 = series_close.rolling(window=30).mean()
             ma200 = series_close.rolling(window=200).mean()
@@ -191,13 +184,8 @@ def screen_stocks():
             curr_ma30 = ma30.iloc[-1]
             curr_ma200 = ma200.iloc[-1]
             
-            # 최근 52주(약 1년) 최고가 계산
             high_52w = series_close.iloc[-52:].max()
 
-            # ---------------------------------------------------------
-            # 조건 1. 국장 코드와 100% 동일한 판다스 벡터화 OR 로직 적용
-            # 최근 8주 내 5주 이평선이 30주 또는 200주 상향 돌파했거나, 10% 이내 근접
-            # ---------------------------------------------------------
             cross_5_30 = (ma5 > ma30) & (ma5.shift(1) <= ma30.shift(1))
             cross_5_200 = (ma5 > ma200) & (ma5.shift(1) <= ma200.shift(1))
             
@@ -209,22 +197,14 @@ def screen_stocks():
             
             cond1 = cond1_30.iloc[-8:].any() or cond1_200.iloc[-8:].any()
 
-            # ---------------------------------------------------------
-            # 조건 2. 최근 6개월(26주) 내 30주 이평선이 200주 상향 돌파
-            # ---------------------------------------------------------
             cross_30_200 = (ma30 > ma200) & (ma30.shift(1) <= ma200.shift(1))
             cond2 = cross_30_200.iloc[-26:].any()
             
-            # ---------------------------------------------------------
-            # 조건 3. 현재가가 52주 최고가(신고가)인지 확인
-            # ---------------------------------------------------------
             cond3 = (curr_price >= high_52w)
 
-            # 🎯 최종 AND 결합 관문
             if not (cond1 and cond2 and cond3): 
                 continue
 
-            # 기본 세부 정보 수집
             stock_info_obj = yf.Ticker(ticker)
             try:
                 info = stock_info_obj.info
