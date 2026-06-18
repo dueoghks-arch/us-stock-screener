@@ -7,39 +7,71 @@ import smtplib
 from email.mime.text import MIMEText
 import requests
 import time
+import io
 
-def get_us_filtered_tickers_master(min_market_cap_billion=1.5):
-    """[US Master] 미국 핵심 우량주($1.5B 이상)를 추출합니다."""
-    print("⏳ [US] 미국 전체 시장 시가총액 데이터베이스 동기화 중...")
-    tickers = set()
+def get_us_index_tickers():
+    """위키피디아에서 S&P 500 및 나스닥 100 종목을 수집합니다."""
+    print("⏳ [Index] S&P 500 및 나스닥 100 성분주 수집 중...")
+    sp_tickers = set()
+    nasdaq_tickers = set()
+    
+    # 1. S&P 500 수집
+    try:
+        url_sp = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        res_sp = requests.get(url_sp, timeout=10)
+        df_sp = pd.read_html(io.StringIO(res_sp.text))[0]
+        for t in df_sp['Symbol'].dropna().tolist():
+            sp_tickers.add(t.strip().upper().replace('.', '-'))
+        print(f"✅ [Index] S&P 500: {len(sp_tickers)}개 확보.")
+    except Exception as e:
+        print(f"⚠️ [Index] S&P 500 수집 실패: {e}")
+
+    # 2. 나스닥 100 수집
+    try:
+        url_nasdaq = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        res_nasdaq = requests.get(url_nasdaq, timeout=10)
+        dfs = pd.read_html(io.StringIO(res_nasdaq.text))
+        for df in dfs:
+            if 'Ticker' in df.columns:
+                for t in df['Ticker'].dropna().tolist():
+                    nasdaq_tickers.add(t.strip().upper().replace('.', '-'))
+                break
+            elif 'Symbol' in df.columns:
+                for t in df['Symbol'].dropna().tolist():
+                    nasdaq_tickers.add(t.strip().upper().replace('.', '-'))
+                break
+        print(f"✅ [Index] 나스닥 100: {len(nasdaq_tickers)}개 확보.")
+    except Exception as e:
+        print(f"⚠️ [Index] 나스닥 100 수집 실패: {e}")
+        
+    return sp_tickers, nasdaq_tickers
+
+def get_us_filtered_tickers_master():
+    """미국 전체 시장 종목을 가져와 인덱스 종목과 합성 유니버스를 만듭니다."""
+    print("⏳ [US Master] 미국 전체 시장 데이터베이스 동기화 중...")
+    sp_set, nasdaq_set = get_us_index_tickers()
+    all_tickers = set()
+    
     try:
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers_with_sectors.csv"
-        df_master = pd.read_csv(url, timeout=20)
+        # 버그 수정: requests로 먼저 받아와서 timeout 처리 후 io.StringIO 사용
+        response = requests.get(url, timeout=20)
+        df_master = pd.read_csv(io.StringIO(response.text))
+        
         if 'Symbol' in df_master.columns:
             df_master['Symbol'] = df_master['Symbol'].astype(str).str.strip().str.upper()
             df_filtered = df_master[(df_master['Symbol'].str.isalpha()) & (df_master['Symbol'].str.len() <= 4)]
             raw_list = df_filtered['Symbol'].unique().tolist()
             for t in raw_list:
-                tickers.add(t.replace('.', '-'))
-            print(f"✅ [US Master] 전체 시장 풀 {len(tickers)}개 확보 완료.")
+                all_tickers.add(t.replace('.', '-'))
+            print(f"✅ [US Master] 전체 시장 기본 풀 {len(all_tickers)}개 확보 완료.")
     except Exception as e:
-        print(f"⚠️ [US Master] 실패: {e}. 지수 기반으로 전환합니다.")
-        return get_fallback_index_tickers()
-    return list(tickers)
+        print(f"⚠️ [US Master] 전체 풀 수집 실패: {e}. 지수 종목 기반으로 강제 전환합니다.")
+        return list(sp_set | nasdaq_set), sp_set, nasdaq_set
 
-def get_fallback_index_tickers():
-    """백업용 S&P 500 & 나스닥 100 수집"""
-    print("⏳ [Backup] 핵심 지수 종목 대체 수집...")
-    tickers = set()
-    try:
-        url_sp = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        df_sp = pd.read_html(requests.get(url_sp, timeout=10).text)[0]
-        for t in df_sp['Symbol'].dropna().tolist():
-            tickers.add(t.strip().upper().replace('.', '-'))
-        print(f"✅ 백업 모드 가동 성공: {len(tickers)}개 자산 확보.")
-    except:
-        return ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA']
-    return list(tickers)
+    # S&P500, 나스닥100, 그리고 전체 시장 종목을 하나로 병합 (중복 제거)
+    final_pool = list(all_tickers | sp_set | nasdaq_set)
+    return final_pool, sp_set, nasdaq_set
 
 def send_email(content, is_html=False):
     """SMTP TLS(587) 이메일 전송"""
@@ -69,12 +101,12 @@ def send_email(content, is_html=False):
         raise e
 
 def screen_stocks():
-    raw_tickers = get_us_filtered_tickers_master()
+    raw_tickers, sp_set, nasdaq_set = get_us_filtered_tickers_master()
     results = []
     chunk_size = 150
     all_close_data = pd.DataFrame()
     
-    print(f"📊 총 {len(raw_tickers)}개 기본 풀 대상 주가 데이터(5년치) 다운로드 시작...")
+    print(f"📊 총 {len(raw_tickers)}개 마스터 풀 대상 주가 데이터(5년치 주봉) 다운로드 시작...")
     for i in range(0, len(raw_tickers), chunk_size):
         chunk_tickers = raw_tickers[i:i+chunk_size]
         try:
@@ -98,15 +130,56 @@ def screen_stocks():
     if all_close_data.index.tz is not None:
         all_close_data.index = all_close_data.index.tz_localize(None)
 
-    print("🔍 [필터링 & 스캔] 이동평균선 돌파 및 신고가 조건 연산 중...")
     if isinstance(all_close_data, pd.Series):
         all_close_data = all_close_data.to_frame()
 
+    print("🔍 [시가총액 필터링] 지수 미포함 중소형주(러셀군) 시총 조사 및 상위 50% 커트라인 연산 중...")
+    # 1차 패스: 전체 종목의 시가총액 정보 수집 및 러셀군 커트라인 계산
+    mkt_caps = {}
+    russell_caps = []
+    
     for ticker in all_close_data.columns:
         try:
             series_close = all_close_data[ticker].dropna()
-            if len(series_close) <= 200: 
-                continue 
+            if len(series_close) <= 200:
+                continue
+            
+            # yfinance fast_info 이용한 빠른 시총 계산
+            stock = yf.Ticker(ticker)
+            mkt_cap_raw = stock.fast_info.market_cap
+            if mkt_cap_raw and mkt_cap_raw > 0:
+                mkt_caps[ticker] = mkt_cap_raw
+                # S&P 500과 나스닥 100에 포함되지 않은 종목들만 러셀/중소형주 풀로 모음
+                if (ticker not in sp_set) and (ticker not in nasdaq_set):
+                    russell_caps.append(mkt_cap_raw)
+        except Exception:
+            continue
+
+    # 러셀군 시가총액 상위 50% (중앙값) 구하기
+    if russell_caps:
+        russell_cutoff = np.percentile(russell_caps, 50)  # 상위 50% 컷오프 지점
+        print(f"✅ 러셀/중소형주 유니버스 시총 상위 50% 컷오프 기준점: 약 ${round(russell_cutoff / 1e9, 2)}B 이상")
+    else:
+        russell_cutoff = 1.5 * 1e9  # 백업 기준선 ($1.5B)
+        print(f"⚠️ 러셀군 시총 연산 불가로 기본 허들($1.5B) 적용")
+
+    print("🔍 [기술적 지표 스캔] 이동평균선 돌파(국장 OR 로직) 및 52주 신고가 연산 시작...")
+    
+    # 2차 패스: 필터링 통과한 종목 대상 트리플 AND 조건 연산
+    for ticker in all_close_data.columns:
+        try:
+            # 시총 데이터가 없거나 유니버스 기준에 미달하면 제외
+            if ticker discouraged_from_caps := (ticker not in mkt_caps):
+                continue
+                
+            current_cap = mkt_caps[ticker]
+            is_index_stock = (ticker in sp_set) or (ticker in nasdaq_set)
+            
+            # [유니버스 필터] S&P500/나스닥100이 아니고, 러셀 상위 50%보다 시총이 낮으면 탈락
+            if (not is_index_stock) and (current_cap < russell_cutoff):
+                continue
+
+            series_close = all_close_data[ticker].dropna()
             
             # 주간 이평선 계산
             ma5 = series_close.rolling(window=5).mean()
@@ -122,7 +195,7 @@ def screen_stocks():
             high_52w = series_close.iloc[-52:].max()
 
             # ---------------------------------------------------------
-            # 조건 1. 국장 코드와 동일한 판다스 벡터화 OR 로직 적용
+            # 조건 1. 국장 코드와 100% 동일한 판다스 벡터화 OR 로직 적용
             # 최근 8주 내 5주 이평선이 30주 또는 200주 상향 돌파했거나, 10% 이내 근접
             # ---------------------------------------------------------
             cross_5_30 = (ma5 > ma30) & (ma5.shift(1) <= ma30.shift(1))
@@ -147,24 +220,21 @@ def screen_stocks():
             # ---------------------------------------------------------
             cond3 = (curr_price >= high_52w)
 
-            # 🎯 최종 AND 결합
+            # 🎯 최종 AND 결합 관문
             if not (cond1 and cond2 and cond3): 
                 continue
 
-            # 시가총액 및 세부 정보 수집
-            stock = yf.Ticker(ticker)
+            # 기본 세부 정보 수집
+            stock_info_obj = yf.Ticker(ticker)
             try:
-                mkt_cap_raw = stock.fast_info.market_cap
-                mkt_cap_billion = mkt_cap_raw / 1e9 if mkt_cap_raw else 0
-                if mkt_cap_billion < 1.5:
-                    continue
-                
-                info = stock.info
+                info = stock_info_obj.info
                 trail_pe = round(info.get('trailingPE'), 2) if info.get('trailingPE') else 'N/A'
                 fwd_pe = round(info.get('forwardPE'), 2) if info.get('forwardPE') else 'N/A'
                 short_name = info.get('shortName', ticker)
             except Exception:
-                continue
+                short_name = ticker
+                trail_pe = 'N/A'
+                fwd_pe = 'N/A'
 
             results.append({
                 'Ticker': ticker,
@@ -176,9 +246,9 @@ def screen_stocks():
                 '200W SMA': round(curr_ma200, 2),
                 'Current PE': trail_pe,
                 'Forward PE': fwd_pe,
-                'Market Cap($B)': round(mkt_cap_billion, 2)
+                'Market Cap($B)': round(current_cap / 1e9, 2)
             })
-            print(f"🎯 [포착] 모든 이평선/신고가 조건 만족 종목 발견: {ticker}")
+            print(f"🎯 [포착] 모든 조건(유니버스 컷 포함) 만족 종목 발견: {ticker}")
 
         except Exception:
             continue
@@ -191,11 +261,11 @@ def screen_stocks():
         
         html_content = f"""
         <h3 style="color: #0d47a1;">📈 미주 주봉 트리플 AND (다중 이평선 수렴/돌파 + 52주 신고가) 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500, NASDAQ, 우량주군 전체 (시가총액 $1.5B 이상)</p>
+        <p><b>시장 범위:</b> S&P500 전체, NASDAQ 100 전체 + 러셀/중소형주군 시가총액 상위 50% 이내 우량주</p>
         <div style="background-color: #f5f5f5; padding: 15px; border-left: 5px solid #0d47a1; margin-bottom: 20px;">
             <p style="margin: 0; font-size: 13px; color: #333;">
             <b>[적용 로직: 아래 3가지 조건 동시 만족 종목 선별]</b><br>
-            <b>1.</b> 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음 <b>(AND)</b><br>
+            <b>1.</b> 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음 (국장형 OR 조건완화 적용) <b>(AND)</b><br>
             <b>2.</b> 최근 6개월 내 30주 이평선이 200주 상향 돌파 <b>(AND)</b><br>
             <b>3. 현재가가 최근 52주 주간 종가 기준 가장 높은 가격(신고가) 달성</b>
             </p>
@@ -207,9 +277,9 @@ def screen_stocks():
     else:
         no_result_html = f"""
         <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
-        <p><b>시장 범위:</b> 미국 우량주 전체 ($1.5B 이상)</p>
+        <p><b>시장 범위:</b> S&P500, NASDAQ 100, 러셀 시총 상위 50% 우량주 전체</p>
         <hr>
-        <p>현재 국장과 동일한 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 3가지 강력한 모멘텀 조건을 모두 만족하는 미주 자산이 포착되지 않았습니다.</p>
+        <p>현재 국장과 완벽히 동일한 조건 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 3가지 강력한 모멘텀 조건을 모두 만족하는 미주 자산이 포착되지 않았습니다.</p>
         """
         print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
         send_email(no_result_html, is_html=True)
