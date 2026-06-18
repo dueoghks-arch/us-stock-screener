@@ -44,7 +44,7 @@ def get_us_index_tickers():
     except Exception as e:
         print(f"⚠️ [Index] 나스닥 100 수집 실패: {e}")
         
-    return sp_tickers, nasdaq_set := nasdaq_tickers
+    return sp_tickers, nasdaq_tickers
 
 def get_us_filtered_tickers_master():
     """미국 전체 시장 종목을 가져와 인덱스 종목과 합성 유니버스를 만듭니다."""
