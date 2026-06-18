@@ -2,32 +2,31 @@ name: US Stock Screener
 
 on:
   schedule:
-    # 💡 한국 시간(KST) 금요일 21시 21분 자동 실행
-    # UTC 기준: 금요일 오전 11시 21분 (18:00 - 9시간)
-    - cron: '21 11 * * 1-5'
+    # 한국 시간 기준 매주 화~토 아침 7시 (미국장 마감 후) 실행
+    - cron: '0 22 * * 1-5'
   workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
   screen_and_email:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v4
       with:
         python-version: '3.10'
 
     - name: Install dependencies
+      # requirements.txt 없이 명시적으로 완벽하게 설치합니다.
       run: |
         python -m pip install --upgrade pip
-        # 필수 라이브러리인 numpy를 포함하여 정상 가동되도록 세팅했습니다.
-        pip install yfinance pandas numpy lxml requests openpyxl cryptography html5lib
+        pip install yfinance pandas requests lxml html5lib
 
     - name: Run Screener Script
       env:
         EMAIL_USER: ${{ secrets.EMAIL_USER }}
         EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-      run: |
-        python main.py
+      run: python main.py
