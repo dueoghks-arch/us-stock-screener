@@ -22,13 +22,11 @@ def fetch_wiki_tickers(url, index_name):
         dfs = pd.read_html(io.StringIO(res.text), flavor='lxml')
         
         for df in dfs:
-            # 테이블의 컬럼명을 대문자로 변환하여 일치 검사
             col_upper = [str(c).upper().strip() for c in df.columns]
             for c in col_upper:
                 if 'SYMBOL' in c or 'TICKER' in c:
                     df.columns = col_upper
                     raw_tickers = df[c].dropna().astype(str).tolist()
-                    # 주식 심볼 정제 (BRK.B -> BRK-B) 및 이상한 값 제거
                     for t in raw_tickers:
                         clean_t = t.strip().upper().replace('.', '-')
                         if 1 <= len(clean_t) <= 5 and clean_t.isalpha() or '-' in clean_t:
@@ -50,9 +48,8 @@ def get_master_universe():
     print(f"✅ Nasdaq 100 확보: {len(nasdaq100)}개")
     
     sp400_mid = fetch_wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies", "S&P 400 MidCap")
-    print(f"✅ S&P 400 (중형주/러셀대체) 확보: {len(sp400_mid)}개")
+    print(f"✅ S&P 400 (중형주/우량주) 확보: {len(sp400_mid)}개")
     
-    # 중복을 제거한 최종 마스터 풀 생성
     master_pool = list(sp500 | nasdaq100 | sp400_mid)
     
     if len(master_pool) < 100:
@@ -90,7 +87,7 @@ def send_email(content, is_html=False):
 def screen_stocks():
     tickers = get_master_universe()
     results = []
-    chunk_size = 100 # 야후 서버 차단 방지
+    chunk_size = 100 
     all_close_data = pd.DataFrame()
     
     print(f"\n📊 총 {len(tickers)}개 우량주 대상 주봉 데이터 다운로드 시작...")
@@ -101,7 +98,6 @@ def screen_stocks():
             data = yf.download(chunk, period="5y", interval="1wk", progress=False, timeout=30)
             if not data.empty and 'Close' in data.columns:
                 close_data = data['Close']
-                # 단일 종목일 경우 Series로 반환되므로 DataFrame으로 형변환
                 if isinstance(close_data, pd.Series):
                     close_data = close_data.to_frame(name=chunk[0])
                     
@@ -111,7 +107,7 @@ def screen_stocks():
                     all_close_data = pd.concat([all_close_data, close_data], axis=1)
             
             print(f"  > ⏳ 다운로드 진행률: {min(i + chunk_size, len(tickers))} / {len(tickers)}...")
-            time.sleep(2) # 서버 차단 회피용 딜레이
+            time.sleep(2) 
         except Exception as e:
             continue
 
@@ -119,7 +115,6 @@ def screen_stocks():
         print("❌ 주가 데이터를 가져오지 못했습니다.")
         return
 
-    # 시간대(Timezone) 정보 제거
     if all_close_data.index.tz is not None:
         all_close_data.index = all_close_data.index.tz_localize(None)
 
@@ -128,15 +123,13 @@ def screen_stocks():
     for ticker in all_close_data.columns:
         try:
             series = all_close_data[ticker].dropna()
-            # 200주 이평선을 위해 최소 200개 이상의 주봉 데이터 필요
             if len(series) <= 200:
                 continue
                 
             curr_price = series.iloc[-1]
-            if curr_price < 5:  # 5달러 미만 동전주 안전 차단
+            if curr_price < 5: 
                 continue
 
-            # 이평선 계산
             ma5 = series.rolling(window=5).mean()
             ma30 = series.rolling(window=30).mean()
             ma200 = series.rolling(window=200).mean()
@@ -147,7 +140,6 @@ def screen_stocks():
             
             high_52w = series.iloc[-52:].max()
 
-            # [조건 1] 5주 이평선이 30주 혹은 200주를 돌파(Cross)하거나 10% 내 근접
             cross_5_30 = (ma5 > ma30) & (ma5.shift(1) <= ma30.shift(1))
             cross_5_200 = (ma5 > ma200) & (ma5.shift(1) <= ma200.shift(1))
             prox_5_30 = (abs(ma5 - ma30) / series) <= 0.10
@@ -157,24 +149,34 @@ def screen_stocks():
             cond1_200 = cross_5_200 | prox_5_200
             cond1 = cond1_30.iloc[-8:].any() or cond1_200.iloc[-8:].any()
 
-            # [조건 2] 최근 26주 내 30주선이 200주선 골든크로스 돌파
             cross_30_200 = (ma30 > ma200) & (ma30.shift(1) <= ma200.shift(1))
             cond2 = cross_30_200.iloc[-26:].any()
             
-            # [조건 3] 52주 신고가
             cond3 = (curr_price >= high_52w)
 
-            # 최종 세 가지 AND 연산
+            # 세 가지 조건 모두 만족할 때만 아래 로직 실행
             if not (cond1 and cond2 and cond3): 
                 continue
 
+            # 🎯 차단을 피하기 위해 '최종 통과한 종목'만 야후에 종목명/시총 정보 요청
+            try:
+                info = yf.Ticker(ticker).info
+                short_name = info.get('shortName', ticker)
+                mkt_cap_raw = info.get('marketCap', 0)
+                mkt_cap_b = mkt_cap_raw / 1e9 if mkt_cap_raw else 0
+            except Exception:
+                short_name = ticker
+                mkt_cap_b = 0
+
             results.append({
                 'Ticker': ticker,
+                'Name': short_name,  # 종목명 추가
                 'Price($)': round(curr_price, 2),
                 '52W High($)': round(high_52w, 2),
                 '5W SMA': round(curr_ma5, 2),
                 '30W SMA': round(curr_ma30, 2),
-                '200W SMA': round(curr_ma200, 2)
+                '200W SMA': round(curr_ma200, 2),
+                'Market Cap($B)': round(mkt_cap_b, 2)  # 시가총액($B) 추가
             })
             print(f"🎯 [포착] 조건 만족 종목 발견: {ticker}")
 
@@ -183,13 +185,14 @@ def screen_stocks():
 
     today_str = datetime.now().strftime('%Y-%m-%d')
     if results:
-        df_res = pd.DataFrame(results)
+        # 시가총액이 큰 순서대로 정렬하여 메일에 표시
+        df_res = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
         table_html = df_res.to_html(index=False, border=1, justify='center')
         styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center; font-size: 14px;" border="1"')
         
         html_body = f"""
         <h3 style="color: #0d47a1;">📈 미주 우량주 주봉 트리플 AND 스캔 ({today_str})</h3>
-        <p><b>유니버스:</b> S&P 500, 나스닥 100, S&P 400 (우량 대/중형주)</p>
+        <p><b>유니버스:</b> S&P 500, 나스닥 100, S&P 400 (검증된 대/중형 우량주)</p>
         <div style="background-color: #f5f5f5; padding: 15px; margin-bottom: 20px;">
             <p style="margin: 0;"><b>[로직 (AND)]</b><br>
             1. 최근 8주 내 5주선이 30/200주선 상향돌파 또는 10% 초근접<br>
