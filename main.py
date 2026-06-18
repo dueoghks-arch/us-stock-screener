@@ -206,4 +206,13 @@ def screen_stocks():
         send_email(html_content, is_html=True)
     else:
         no_result_html = f"""
-        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정
+        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
+        <p><b>시장 범위:</b> 미국 우량주 전체 ($1.5B 이상)</p>
+        <hr>
+        <p>현재 국장과 동일한 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 3가지 강력한 모멘텀 조건을 모두 만족하는 미주 자산이 포착되지 않았습니다.</p>
+        """
+        print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
+        send_email(no_result_html, is_html=True)
+
+if __name__ == "__main__":
+    screen_stocks()
