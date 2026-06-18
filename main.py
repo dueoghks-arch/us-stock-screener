@@ -52,7 +52,7 @@ def send_email(content, is_html=False):
         return
 
     msg = MIMEText(content, 'html' if is_html else 'plain')
-    msg['Subject'] = f"📈 [미주 전수조사] 이동평균선 돌파형 52주 신고가 종목 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"📈 [미주 스캐너] 트리플 AND(이평선 돌파 + 52주 신고가) 포착 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
     msg['From'] = sender_email
     msg['To'] = sender_email
 
@@ -74,7 +74,6 @@ def screen_stocks():
     chunk_size = 150
     all_close_data = pd.DataFrame()
     
-    # 200주 이평선을 구해야 하므로 다운로드 기간을 5년(5y)으로 연장
     print(f"📊 총 {len(raw_tickers)}개 기본 풀 대상 주가 데이터(5년치) 다운로드 시작...")
     for i in range(0, len(raw_tickers), chunk_size):
         chunk_tickers = raw_tickers[i:i+chunk_size]
@@ -86,7 +85,7 @@ def screen_stocks():
                     all_close_data = chunk_close
                 else:
                     all_close_data = pd.concat([all_close_data, chunk_close], axis=1)
-            print(f"  > ⏳ {min(i + chunk_size, len(raw_tickers))} / {len(raw_tickers)} 종목 완료...")
+            print(f"  > ⏳ Progress: {min(i + chunk_size, len(raw_tickers))} / {len(raw_tickers)} completed...")
             time.sleep(1.2)
         except Exception as e:
             print(f"⚠️ 청크 다운로드 중 일시적 지연 발생: {e}")
@@ -106,70 +105,50 @@ def screen_stocks():
     for ticker in all_close_data.columns:
         try:
             series_close = all_close_data[ticker].dropna()
-            # 200주 이평선을 계산해야 하므로 최소 200주 이상의 데이터가 필요
-            if len(series_close) < 200:
+            if len(series_close) <= 200: 
                 continue 
             
-            curr_price = series_close.iloc[-1]
-            if pd.isna(curr_price) or curr_price <= 0:
-                continue
-            
             # 주간 이평선 계산
-            sma5 = series_close.rolling(window=5).mean()
-            sma30 = series_close.rolling(window=30).mean()
-            sma200 = series_close.rolling(window=200).mean()
-
-            # [조건 3] 현재가가 최근 52주 주간 종가 기준 가장 높은 가격(신고가) 달성
-            last_52w_max = series_close.tail(52).max()
-            if curr_price < (last_52w_max - 1e-5):
-                continue
-
-            # [조건 2] 최근 6개월(26주) 내 30주 이평선이 200주 상향 돌파 (골든크로스)
-            # 최근 27주 데이터를 가져와 전주와 이번주의 크로스오버 확인
-            sma30_27w = sma30.tail(27)
-            sma200_27w = sma200.tail(27)
+            ma5 = series_close.rolling(window=5).mean()
+            ma30 = series_close.rolling(window=30).mean()
+            ma200 = series_close.rolling(window=200).mean()
             
-            cond2_met = False
-            for j in range(1, len(sma30_27w)):
-                prev30, curr30_val = sma30_27w.iloc[j-1], sma30_27w.iloc[j]
-                prev200, curr200_val = sma200_27w.iloc[j-1], sma200_27w.iloc[j]
-                
-                # 상향 돌파 (이전 주엔 30주가 200주보다 낮거나 같았고, 이번 주엔 높아짐)
-                if prev30 <= prev200 and curr30_val > curr200_val:
-                    cond2_met = True
-                    break
+            curr_price = series_close.iloc[-1]
+            curr_ma5 = ma5.iloc[-1]
+            curr_ma30 = ma30.iloc[-1]
+            curr_ma200 = ma200.iloc[-1]
             
-            if not cond2_met:
-                continue
+            # 최근 52주(약 1년) 최고가 계산
+            high_52w = series_close.iloc[-52:].max()
 
-            # [조건 1] 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음
-            # 최근 9주 데이터를 가져와 크로스오버 및 근접도 확인
-            sma5_9w = sma5.tail(9)
-            sma30_9w = sma30.tail(9)
-            sma200_9w = sma200.tail(9)
-            price_9w = series_close.tail(9)
+            # ---------------------------------------------------------
+            # 조건 1. 국장 코드와 동일한 판다스 벡터화 OR 로직 적용
+            # 최근 8주 내 5주 이평선이 30주 또는 200주 상향 돌파했거나, 10% 이내 근접
+            # ---------------------------------------------------------
+            cross_5_30 = (ma5 > ma30) & (ma5.shift(1) <= ma30.shift(1))
+            cross_5_200 = (ma5 > ma200) & (ma5.shift(1) <= ma200.shift(1))
+            
+            prox_5_30 = (abs(ma5 - ma30) / series_close) <= 0.10
+            prox_5_200 = (abs(ma5 - ma200) / series_close) <= 0.10
+            
+            cond1_30 = cross_5_30 | prox_5_30
+            cond1_200 = cross_5_200 | prox_5_200
+            
+            cond1 = cond1_30.iloc[-8:].any() or cond1_200.iloc[-8:].any()
 
-            cond1_met = False
-            for j in range(1, len(sma5_9w)):
-                prev5, curr5_val = sma5_9w.iloc[j-1], sma5_9w.iloc[j]
-                prev30_1, curr30_1 = sma30_9w.iloc[j-1], sma30_9w.iloc[j]
-                prev200_1, curr200_1 = sma200_9w.iloc[j-1], sma200_9w.iloc[j]
-                p_val = price_9w.iloc[j]
+            # ---------------------------------------------------------
+            # 조건 2. 최근 6개월(26주) 내 30주 이평선이 200주 상향 돌파
+            # ---------------------------------------------------------
+            cross_30_200 = (ma30 > ma200) & (ma30.shift(1) <= ma200.shift(1))
+            cond2 = cross_30_200.iloc[-26:].any()
+            
+            # ---------------------------------------------------------
+            # 조건 3. 현재가가 52주 최고가(신고가)인지 확인
+            # ---------------------------------------------------------
+            cond3 = (curr_price >= high_52w)
 
-                # 상향 돌파 여부
-                cross_30 = (prev5 <= prev30_1 and curr5_val > curr30_1)
-                cross_200 = (prev5 <= prev200_1 and curr5_val > curr200_1)
-                
-                # 5주 이평선이 30주/200주 이평선과 주가(p_val) 대비 10% 이내로 근접했는지
-                dist_30 = abs(curr5_val - curr30_1) / p_val
-                dist_200 = abs(curr5_val - curr200_1) / p_val
-                close_prox = (dist_30 <= 0.10) and (dist_200 <= 0.10)
-
-                if cross_30 or cross_200 or close_prox:
-                    cond1_met = True
-                    break
-
-            if not cond1_met:
+            # 🎯 최종 AND 결합
+            if not (cond1 and cond2 and cond3): 
                 continue
 
             # 시가총액 및 세부 정보 수집
@@ -191,10 +170,10 @@ def screen_stocks():
                 'Ticker': ticker,
                 'Name': short_name,
                 'Price($)': round(curr_price, 2),
-                '52W High($)': round(last_52w_max, 2),
-                '5W SMA': round(sma5.iloc[-1], 2),
-                '30W SMA': round(sma30.iloc[-1], 2),
-                '200W SMA': round(sma200.iloc[-1], 2),
+                '52W High($)': round(high_52w, 2),
+                '5W SMA': round(curr_ma5, 2),
+                '30W SMA': round(curr_ma30, 2),
+                '200W SMA': round(curr_ma200, 2),
                 'Current PE': trail_pe,
                 'Forward PE': fwd_pe,
                 'Market Cap($B)': round(mkt_cap_billion, 2)
@@ -211,15 +190,15 @@ def screen_stocks():
         styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center; font-size: 14px;" border="1"')
         
         html_content = f"""
-        <h3 style="color: #1b5e20;">📈 미주 이동평균선 돌파 & 52주 신고가 스캔 리포트 ({today_str})</h3>
+        <h3 style="color: #0d47a1;">📈 미주 주봉 트리플 AND (다중 이평선 수렴/돌파 + 52주 신고가) 보고서 ({today_str})</h3>
         <p><b>시장 범위:</b> S&P500, NASDAQ, 우량주군 전체 (시가총액 $1.5B 이상)</p>
-        <div style="background-color: #f1f8e9; padding: 15px; border-left: 5px solid #4caf50; margin-bottom: 20px;">
-            <p style="margin: 0;"><b>[필터링 통과 조건]</b></p>
-            <ul style="margin-top: 5px; margin-bottom: 0;">
-                <li><b>조건 1:</b> 최근 8주 내 5주 이평선이 30주/200주 상향 돌파했거나 주가의 10% 이내 초근접</li>
-                <li><b>조건 2:</b> 최근 6개월 내 30주 이평선이 200주 상향 돌파 (골든크로스)</li>
-                <li><b>조건 3:</b> 현재가가 최근 52주(1년) 주간 종가 기준 최고가 달성</li>
-            </ul>
+        <div style="background-color: #f5f5f5; padding: 15px; border-left: 5px solid #0d47a1; margin-bottom: 20px;">
+            <p style="margin: 0; font-size: 13px; color: #333;">
+            <b>[적용 로직: 아래 3가지 조건 동시 만족 종목 선별]</b><br>
+            <b>1.</b> 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음 <b>(AND)</b><br>
+            <b>2.</b> 최근 6개월 내 30주 이평선이 200주 상향 돌파 <b>(AND)</b><br>
+            <b>3. 현재가가 최근 52주 주간 종가 기준 가장 높은 가격(신고가) 달성</b>
+            </p>
         </div>
         {styled_table}
         """
@@ -227,13 +206,4 @@ def screen_stocks():
         send_email(html_content, is_html=True)
     else:
         no_result_html = f"""
-        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
-        <p><b>시장 범위:</b> 미국 우량주 전체 ($1.5B 이상)</p>
-        <hr>
-        <p>현재 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 3가지 강력한 상승 모멘텀 조건을 모두 만족하는 자산이 포착되지 않았습니다.</p>
-        """
-        print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
-        send_email(no_result_html, is_html=True)
-
-if __name__ == "__main__":
-    screen_stocks()
+        <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정
