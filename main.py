@@ -101,22 +101,24 @@ def send_email(content, is_html=False):
 def screen_stocks():
     raw_tickers, sp_set, nasdaq_set = get_us_filtered_tickers_master()
     results = []
-    chunk_size = 150
+    chunk_size = 100  # 서버 차단 방지를 위해 청크 축소
     all_close_data = pd.DataFrame()
+    all_volume_data = pd.DataFrame()
     
     print(f"📊 총 {len(raw_tickers)}개 마스터 풀 대상 주가 데이터(5년치 주봉) 다운로드 시작...")
     for i in range(0, len(raw_tickers), chunk_size):
         chunk_tickers = raw_tickers[i:i+chunk_size]
         try:
             chunk_data = yf.download(chunk_tickers, period="5y", interval="1wk", progress=False, timeout=50)
-            if not chunk_data.empty and 'Close' in chunk_data.columns:
-                chunk_close = chunk_data['Close']
-                if all_close_data.empty:
-                    all_close_data = chunk_close
-                else:
-                    all_close_data = pd.concat([all_close_data, chunk_close], axis=1)
+            if not chunk_data.empty:
+                if 'Close' in chunk_data.columns:
+                    chunk_close = chunk_data['Close']
+                    all_close_data = chunk_close if all_close_data.empty else pd.concat([all_close_data, chunk_close], axis=1)
+                if 'Volume' in chunk_data.columns:
+                    chunk_volume = chunk_data['Volume']
+                    all_volume_data = chunk_volume if all_volume_data.empty else pd.concat([all_volume_data, chunk_volume], axis=1)
             print(f"  > ⏳ Progress: {min(i + chunk_size, len(raw_tickers))} / {len(raw_tickers)} completed...")
-            time.sleep(1.2)
+            time.sleep(2.0)  # 서버 차단 우회용 대기 시간 확대
         except Exception as e:
             print(f"⚠️ 청크 다운로드 중 일시적 지연 발생: {e}")
             continue
@@ -128,12 +130,7 @@ def screen_stocks():
     if all_close_data.index.tz is not None:
         all_close_data.index = all_close_data.index.tz_localize(None)
 
-    if isinstance(all_close_data, pd.Series):
-        all_close_data = all_close_data.to_frame()
-
-    print("🔍 [시가총액 필터링] 지수 미포함 중소형주(러셀군) 시총 조사 및 상위 50% 커트라인 연산 중...")
-    mkt_caps = {}
-    russell_caps = []
+    print("🔍 [유니버스 필터링] 지수 종목 및 거래대금 하위 동전주 필터링 연산 중...")
     
     for ticker in all_close_data.columns:
         try:
@@ -141,51 +138,33 @@ def screen_stocks():
             if len(series_close) <= 200:
                 continue
             
-            # 버그 수정: fast_info 대신 가장 안전한 전통적 .info 구조 사용
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            mkt_cap_raw = info.get('marketCap')
+            curr_price = series_close.iloc[-1]
             
-            if mkt_cap_raw and mkt_cap_raw > 0:
-                mkt_caps[ticker] = mkt_cap_raw
-                if (ticker not in sp_set) and (ticker not in nasdaq_set):
-                    russell_caps.append(mkt_cap_raw)
-        except Exception:
-            continue
-
-    if russell_caps:
-        russell_cutoff = np.percentile(russell_caps, 50)
-        print(f"✅ 러셀/중소형주 유니버스 시총 상위 50% 컷오프 기준점: 약 ${round(russell_cutoff / 1e9, 2)}B 이상")
-    else:
-        russell_cutoff = 1.5 * 1e9
-        print(f"⚠️ 러셀군 시총 연산 불가로 기본 허들($1.5B) 적용")
-
-    print("🔍 [기술적 지표 스캔] 이동평균선 돌파(국장 OR 로직) 및 52주 신고가 연산 시작...")
-    
-    for ticker in all_close_data.columns:
-        try:
-            if ticker not in mkt_caps:
+            # 주가가 너무 낮은 동전주($3 미만)는 안전을 위해 자동 필터링
+            if curr_price < 3:
                 continue
                 
-            current_cap = mkt_caps[ticker]
             is_index_stock = (ticker in sp_set) or (ticker in nasdaq_set)
             
-            if (not is_index_stock) and (current_cap < russell_cutoff):
-                continue
+            # 지수 미포함 주식 중 최근 거래대금이 너무 적은 소형주는 필터링 (네트워크 무거운 연산 대체)
+            if not is_index_stock and ticker in all_volume_data.columns:
+                recent_volume = all_volume_data[ticker].dropna().iloc[-4:].mean()  # 최근 4주 평균 거래량
+                approx_weekly_turnover = recent_volume * curr_price
+                if approx_weekly_turnover < 2_000_000:  # 주간 거래대금 약 20억 미만 제외
+                    continue
 
-            series_close = all_close_data[ticker].dropna()
-            
+            # 주간 이평선 계산
             ma5 = series_close.rolling(window=5).mean()
             ma30 = series_close.rolling(window=30).mean()
             ma200 = series_close.rolling(window=200).mean()
             
-            curr_price = series_close.iloc[-1]
             curr_ma5 = ma5.iloc[-1]
             curr_ma30 = ma30.iloc[-1]
             curr_ma200 = ma200.iloc[-1]
             
             high_52w = series_close.iloc[-52:].max()
 
+            # 조건 1. 이동평균선 돌파/수렴 (최근 8주 내 돌파 혹은 10% 이내 근접)
             cross_5_30 = (ma5 > ma30) & (ma5.shift(1) <= ma30.shift(1))
             cross_5_200 = (ma5 > ma200) & (ma5.shift(1) <= ma200.shift(1))
             
@@ -197,55 +176,44 @@ def screen_stocks():
             
             cond1 = cond1_30.iloc[-8:].any() or cond1_200.iloc[-8:].any()
 
+            # 조건 2. 최근 6개월(26주) 내 30주 이평선이 200주 상향 돌파
             cross_30_200 = (ma30 > ma200) & (ma30.shift(1) <= ma200.shift(1))
             cond2 = cross_30_200.iloc[-26:].any()
             
+            # 조건 3. 현재가가 52주 최고가(신고가) 달성
             cond3 = (curr_price >= high_52w)
 
             if not (cond1 and cond2 and cond3): 
                 continue
 
-            stock_info_obj = yf.Ticker(ticker)
-            try:
-                info = stock_info_obj.info
-                trail_pe = round(info.get('trailingPE'), 2) if info.get('trailingPE') else 'N/A'
-                fwd_pe = round(info.get('forwardPE'), 2) if info.get('forwardPE') else 'N/A'
-                short_name = info.get('shortName', ticker)
-            except Exception:
-                short_name = ticker
-                trail_pe = 'N/A'
-                fwd_pe = 'N/A'
-
+            # 최종 포착 시에만 해당 종목 정보 간결하게 저장 (차단 유발 .info 제거)
             results.append({
                 'Ticker': ticker,
-                'Name': short_name,
                 'Price($)': round(curr_price, 2),
                 '52W High($)': round(high_52w, 2),
                 '5W SMA': round(curr_ma5, 2),
                 '30W SMA': round(curr_ma30, 2),
                 '200W SMA': round(curr_ma200, 2),
-                'Current PE': trail_pe,
-                'Forward PE': fwd_pe,
-                'Market Cap($B)': round(current_cap / 1e9, 2)
+                'Market Status': 'Index Component' if is_index_stock else 'Russell Market'
             })
-            print(f"🎯 [포착] 모든 조건(유니버스 컷 포함) 만족 종목 발견: {ticker}")
+            print(f"🎯 [포착] 모든 조건 만족 종목 발견: {ticker}")
 
         except Exception:
             continue
 
     today_str = datetime.now().strftime('%Y-%m-%d')
     if results:
-        final_df = pd.DataFrame(results).sort_values(by='Market Cap($B)', ascending=False)
+        final_df = pd.DataFrame(results)
         table_html = final_df.to_html(index=False, border=1, justify='center', classes='dataframe')
         styled_table = table_html.replace('border="1"', 'style="border-collapse: collapse; width: 100%; text-align: center; font-size: 14px;" border="1"')
         
         html_content = f"""
         <h3 style="color: #0d47a1;">📈 미주 주봉 트리플 AND (다중 이평선 수렴/돌파 + 52주 신고가) 보고서 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500 전체, NASDAQ 100 전체 + 러셀/중소형주군 시가총액 상위 50% 이내 우량주</p>
+        <p><b>시장 범위:</b> S&P500 전체, NASDAQ 100 전체 + 러셀 우량 거래 대금 상위군</p>
         <div style="background-color: #f5f5f5; padding: 15px; border-left: 5px solid #0d47a1; margin-bottom: 20px;">
             <p style="margin: 0; font-size: 13px; color: #333;">
             <b>[적용 로직: 아래 3가지 조건 동시 만족 종목 선별]</b><br>
-            <b>1.</b> 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음 (국장형 OR 조건완화 적용) <b>(AND)</b><br>
+            <b>1.</b> 최근 8주 내 5주 이평선이 30주/200주를 상향 돌파했거나, 주가의 10% 이내로 초근접한 이력이 있음 <b>(AND)</b><br>
             <b>2.</b> 최근 6개월 내 30주 이평선이 200주 상향 돌파 <b>(AND)</b><br>
             <b>3. 현재가가 최근 52주 주간 종가 기준 가장 높은 가격(신고가) 달성</b>
             </p>
@@ -257,9 +225,9 @@ def screen_stocks():
     else:
         no_result_html = f"""
         <h3 style="color: #b71c1c;">⚠️ 미주 스캐너 정기 알림 ({today_str})</h3>
-        <p><b>시장 범위:</b> S&P500, NASDAQ 100, 러셀 시총 상위 50% 우량주 전체</p>
+        <p><b>시장 범위:</b> S&P500, NASDAQ 100, 러셀 주요 자산 전체</p>
         <hr>
-        <p>현재 국장과 완벽히 동일한 조건 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 3가지 강력한 모멘텀 조건을 모두 만족하는 미주 자산이 포착되지 않았습니다.</p>
+        <p>현재 조건 <b>[이평선 수렴/돌파 + 52주 신고가]</b> 모멘텀 조건을 모두 만족하는 미주 자산이 포착되지 않았습니다.</p>
         """
         print("ℹ️ 조건 만족 종목이 없습니다. 안내 메일 발송을 시도합니다...")
         send_email(no_result_html, is_html=True)
