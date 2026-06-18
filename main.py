@@ -169,7 +169,7 @@ def screen_stocks():
     for ticker in all_close_data.columns:
         try:
             # 시총 데이터가 없거나 유니버스 기준에 미달하면 제외
-            if ticker discouraged_from_caps := (ticker not in mkt_caps):
+            if ticker not in mkt_caps:
                 continue
                 
             current_cap = mkt_caps[ticker]
